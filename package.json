@@ -1,0 +1,43 @@
+{
+  "name": "tg-games",
+  "version": "0.9.45",
+  "description": "Telegram LLM RPG Bot — текстовые RPG-игры на базе LLM с движком-редуктором JSON-состояния",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/core && npm run build -w apps/bot",
+    "build:contract": "node packages/schema-contract/build.mjs",
+    "build:admin": "npm run build -w packages/core && npm run build -w apps/admin-api && npm run build -w apps/admin-web",
+    "build:all": "npm run build && npm run build -w apps/admin-api && npm run build -w apps/admin-web",
+    "start": "npm run start -w apps/bot",
+    "start:support": "npm run start:support -w apps/bot",
+    "start:support:admin": "npm run start:support:admin -w apps/bot",
+    "dev": "npm run build -w packages/core && npm run dev -w apps/bot",
+    "dev:support": "npm run build -w packages/core && npm run dev:support -w apps/bot",
+    "dev:support:admin": "npm run build -w packages/core && npm run dev:support:admin -w apps/bot",
+    "dev:admin:backend": "npm run dev -w apps/admin-api",
+    "dev:admin:frontend": "npm run dev -w apps/admin-web",
+    "migrate": "npm run migrate -w packages/core",
+    "typecheck": "npm run build -w packages/core && npm run typecheck -w apps/bot && npm run typecheck -w apps/admin-api && npm run typecheck -w apps/admin-web",
+    "lint": "eslint \"packages/core/src/**/*.ts\" \"apps/bot/src/**/*.ts\" \"apps/bot/tests/**/*.ts\" \"apps/admin-web/tests/**/*.test.ts\" \"packages/schema-contract/tests/**/*.ts\" && npm run lint -w apps/admin-api && npm run lint -w apps/admin-web",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e -w apps/admin-web"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.7"
+  }
+}

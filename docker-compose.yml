@@ -1,0 +1,175 @@
+services:
+  # Контейнер с базой данных PostgreSQL
+  postgres_db:
+    # Образ с расширением pgvector для семантического поиска экспертизы (issue #147).
+    image: pgvector/pgvector:pg16
+    container_name: tg_rpg_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres_password}
+      POSTGRES_DB: ${DB_NAME:-tg_rpg_db}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-tg_rpg_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Графовая база Neo4j для концептуальной онтологии и Graph RAG (issue #363).
+  neo4j_db:
+    image: neo4j:2026.05.0-community
+    container_name: tg_rpg_neo4j
+    restart: always
+    environment:
+      NEO4J_AUTH: "${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-neo4j_password}"
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4jdata:/data
+      - neo4jlogs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u ${NEO4J_USER:-neo4j} -p ${NEO4J_PASSWORD:-neo4j_password} 'RETURN 1'"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  # One-shot контейнер миграций (issue #336). Раннер раскатывает схему PostgreSQL
+  # и Neo4j версионно, ровно один раз; перезапускать не нужно (restart: no).
+  # Боты и админ-API стартуют только после успешного завершения этого сервиса
+  # через depends_on.condition: service_completed_successfully.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tg-games:local
+    container_name: tg_rpg_migrate
+    restart: "no"
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      neo4j_db:
+        condition: service_healthy
+    environment:
+      # Настройки подключения к БД внутри Docker сети — раннер использует только их.
+      DB_HOST: postgres_db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres_password}
+      DB_NAME: ${DB_NAME:-tg_rpg_db}
+      NEO4J_URI: bolt://neo4j_db:7687
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j_password}
+      NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
+    command: ["node", "packages/core/dist/db/migrate.js"]
+
+  # Контейнер с Node.js TypeScript приложением (игровой бот)
+  bot_app:
+    image: tg-games:local
+    container_name: tg_rpg_bot
+    restart: always
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      neo4j_db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment: &app_env
+      # Настройки подключения к БД внутри Docker сети
+      DB_HOST: postgres_db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres_password}
+      DB_NAME: ${DB_NAME:-tg_rpg_db}
+      NEO4J_URI: bolt://neo4j_db:7687
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j_password}
+      NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
+
+      # Токены и ключи (берутся из общего файла .env)
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      LLM_PROVIDER: ${LLM_PROVIDER}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-}
+      LLM_MODEL_NAME: ${LLM_MODEL_NAME}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-3}
+
+      # Экспертиза службы поддержки по эмбеддингам (issue #147, #279).
+      # EMBEDDING_PROVIDER по умолчанию OPENAI; для Azure нужен deployment.
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-}
+      SUPPORT_LLM_CONSULTATION: ${SUPPORT_LLM_CONSULTATION:-}
+
+      # Служба поддержки (issue #57). Игровому боту нужен лишь username бота
+      # поддержки для кнопки «Служба поддержки»; остальные значения использует
+      # стек ботов поддержки (профиль support) из этого же .env.
+      SUPPORT_BOT_TOKEN: ${SUPPORT_BOT_TOKEN:-}
+      SUPPORT_ADMIN_BOT_TOKEN: ${SUPPORT_ADMIN_BOT_TOKEN:-}
+      SUPPORT_BOT_USERNAME: ${SUPPORT_BOT_USERNAME:-}
+      SUPPORT_ADMIN_IDS: ${SUPPORT_ADMIN_IDS:-}
+
+      # Медиа: озвучка и иллюстрации (issue #71, #78). Без проброса этих
+      # переменных контейнер не видит настроек MEDIA_* из .env и подставляет
+      # дефолты (alloy, dall-e-3) вместо заданных моделей/голоса.
+      MEDIA_PROVIDER: ${MEDIA_PROVIDER:-}
+      MEDIA_ENABLED: ${MEDIA_ENABLED:-}
+      MEDIA_API_KEY: ${MEDIA_API_KEY:-}
+      MEDIA_TTS_ENABLED: ${MEDIA_TTS_ENABLED:-}
+      MEDIA_TTS_MODEL: ${MEDIA_TTS_MODEL:-}
+      MEDIA_TTS_VOICE: ${MEDIA_TTS_VOICE:-}
+      MEDIA_IMAGE_ENABLED: ${MEDIA_IMAGE_ENABLED:-}
+      MEDIA_IMAGE_MODEL: ${MEDIA_IMAGE_MODEL:-}
+      MEDIA_IMAGE_SIZE: ${MEDIA_IMAGE_SIZE:-}
+
+  # Клиентский бот службы поддержки (issue #57).
+  # Профиль support: запускается по `docker compose --profile support up`.
+  bot_support:
+    image: tg-games:local
+    container_name: tg_rpg_bot_support
+    restart: always
+    profiles: ["support"]
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      neo4j_db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      bot_app:
+        condition: service_started
+    environment: *app_env
+    command: ["node", "apps/bot/dist/botSupport/index.js"]
+
+  # Бот администраторов службы поддержки (issue #57).
+  bot_support_admin:
+    image: tg-games:local
+    container_name: tg_rpg_bot_support_admin
+    restart: always
+    profiles: ["support"]
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+      neo4j_db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      bot_app:
+        condition: service_started
+    environment: *app_env
+    command: ["node", "apps/bot/dist/botSupportAdmin/index.js"]
+
+volumes:
+  pgdata:
+  neo4jdata:
+  neo4jlogs:

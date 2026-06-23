@@ -1,0 +1,2011 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #202124;
+  background: #f4f5f2;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --line: #d7d9d0;
+  --panel: #ffffff;
+  --muted: #666b5f;
+  --text: #202124;
+  --soft: #eef1eb;
+  --accent: #1f8a70;
+  --accent-strong: #0f6b58;
+  --warning: #9a5b00;
+  --danger: #b3261e;
+  --shadow: 0 10px 28px rgba(32, 33, 36, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #f4f5f2;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 8px 10px;
+  outline: none;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 120px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  line-height: 1.45;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(31, 138, 112, 0.14);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 8px;
+  text-align: left;
+  vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  background: #fafbf8;
+}
+
+tr {
+  min-height: 40px;
+}
+
+tbody tr:hover {
+  background: #f6faf4;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pagination-summary {
+  white-space: nowrap;
+}
+
+.pagination-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pagination-button {
+  width: 32px;
+  min-height: 32px;
+  border-color: var(--line);
+}
+
+.pagination-page {
+  min-width: 122px;
+  text-align: center;
+  color: var(--text);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 4px 14px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(8px);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 150px;
+  color: #1d4c43;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.nav {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.nav-button,
+.icon-button,
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.nav-button {
+  padding: 6px 9px;
+  color: #3d413a;
+}
+
+.nav-button.active {
+  border-color: #b8d8cc;
+  background: #e9f5ef;
+  color: var(--accent-strong);
+}
+
+.icon-button {
+  width: 34px;
+  color: var(--muted);
+}
+
+.button {
+  padding: 7px 11px;
+  border-color: #b8d8cc;
+  background: #e9f5ef;
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.button-danger {
+  border-color: #f5c2c0;
+  background: #fdf3f3;
+  color: var(--danger);
+}
+
+.button-danger:hover {
+  border-color: var(--danger);
+  background: #fbe8e7;
+}
+
+/* Кнопки-пиктограммы тулбара схем: тот же стиль, но только иконка, чтобы весь
+   ряд помещался по ширине и не «уезжал» вниз (issue #264). */
+.button-icon {
+  padding: 7px;
+  width: 34px;
+}
+
+.button:hover,
+.nav-button:hover,
+.icon-button:hover {
+  border-color: #96c7b7;
+  background: #f1f8f4;
+}
+
+/* Активная вкладка раздела «Экспертиза» (issue #156). */
+.button-active {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.button-active:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+}
+
+.tab-bar {
+  margin-bottom: 12px;
+}
+
+.expertise-view {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-chip {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.workspace {
+  padding: 60px 16px 18px;
+}
+
+.view-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+  gap: 14px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.view-grid.wide-detail {
+  grid-template-columns: minmax(0, 0.95fr) minmax(460px, 1.05fr);
+}
+
+.panel {
+  min-width: 0;
+  min-height: calc(100vh - 82px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.list-panel,
+.detail-panel {
+  padding: 14px;
+  overflow: auto;
+}
+
+.detail-panel {
+  max-height: calc(100vh - 82px);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.toolbar input {
+  max-width: 360px;
+}
+
+.toolbar.filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr)) auto;
+}
+
+.section-title {
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-weight: 750;
+  color: var(--text);
+}
+
+.node-config-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.link-button {
+  display: inline;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-button:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.subhead {
+  margin: 16px 0 8px;
+  color: #3d413a;
+  font-size: 13px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.editor-hint {
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.error-line {
+  margin: 8px 0 10px;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* Зарезервированное место под ошибку валидации JSON в JsonEditor (issue #324):
+   строка всегда присутствует в DOM, поэтому при появлении/исчезновении ошибки
+   поле ввода не прыгает. */
+.json-editor-error {
+  display: block;
+  min-height: 1.2em;
+  margin: 4px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.message-line {
+  margin: 8px 0 10px;
+  color: var(--accent-strong);
+  font-size: 13px;
+}
+
+/* Навигация по телам loop-узлов (issue #337): строка-путь из id открытых циклов и
+   кнопка выхода на уровень выше. Живёт там же, где сообщения редактора. */
+.schema-loop-path {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  font-size: 13px;
+}
+
+.schema-loop-path-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.node-loop-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.file-input {
+  display: none;
+}
+
+.empty {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.meta-list {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0 0 14px;
+}
+
+.meta-list dt {
+  color: var(--muted);
+}
+
+.meta-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #edf2f7;
+  color: #384150;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.badge-error {
+  background: #fbe9e7;
+  color: var(--danger);
+}
+
+/* Происхождение элемента онтологии (issue #328, Graph RAG). Извлечённое LLM
+   подсвечиваем янтарным — его стоит проверить и подтвердить; ручную или уже
+   подтверждённую разметку — зелёным. */
+.badge-extracted {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.badge-authored {
+  background: #e3f1ea;
+  color: var(--accent-strong);
+}
+
+/* Карточки сообществ графа онтологии (issue #328, Graph RAG): заголовок,
+   LLM-сводка и состав (slug-и концептов). Только просмотр — набор сообществ
+   перестраивается offline-индексацией бота. */
+.community-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  background: var(--panel);
+}
+
+.community-card .subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.community-card p {
+  margin: 0 0 8px;
+  color: var(--text);
+}
+
+.community-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Счётчик свежих ошибок исполнения схем на пункте меню (issue #255, этап F). */
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Колонка и кружок новых записей в истории схемы (issue #293). */
+.history-new-col {
+  width: 20px;
+  padding-right: 0;
+}
+
+/* Таблица истории схемы (issue #308): колонки с датами сужены, кнопки в одну строку. */
+.history-table {
+  table-layout: auto;
+}
+
+.history-date-col {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.history-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.history-new-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex-shrink: 0;
+}
+
+.json-box {
+  max-height: 300px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafbf8;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.json-box.error-box {
+  border-color: var(--danger);
+  background: #fdf0ef;
+  color: var(--danger);
+}
+
+.timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.timeline-item {
+  border-left: 3px solid #d8b45d;
+  padding: 8px 10px;
+  background: #fffdf7;
+}
+
+.timeline-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.timeline-action {
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+
+.create-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.editor-label {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.editor-label.compact {
+  margin-top: 14px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.checkbox-label input {
+  width: auto;
+}
+
+.editor-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.history-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
+
+.history-control select {
+  width: auto;
+  max-width: 220px;
+  padding: 5px 8px;
+}
+
+.history-control .error-line {
+  margin: 0;
+  flex-basis: 100%;
+}
+
+.history-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.prompt-variables {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+}
+
+.prompt-variables-title {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-weight: 650;
+  font-size: 13px;
+}
+
+.prompt-variables-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.prompt-variables-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.prompt-variable {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+
+.prompt-variable dt {
+  margin: 0;
+}
+
+.prompt-variable dt code {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--accent-strong);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.prompt-variable dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+@media (max-width: 640px) {
+  .prompt-variable {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(32, 33, 36, 0.45);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 100%);
+  max-height: calc(100vh - 60px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head .section-title {
+  margin: 0;
+}
+
+.modal-body {
+  padding: 16px;
+  overflow: auto;
+}
+
+.modal-body .json-box {
+  max-height: none;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.plain-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.plain-list li {
+  overflow-wrap: anywhere;
+}
+
+.schemas-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: calc(100vh - 78px);
+  min-height: 0;
+  max-width: 1800px;
+  margin: 0 auto;
+}
+
+.schemas-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.schema-tabs,
+.schemas-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Индикатор статуса черновика (issue #286): иконка слева от кнопки «Обновить»;
+   серый — черновик совпадает с рабочей версией, оранжевый — есть незафиксированный черновик. */
+.schema-draft-status {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary, #9ca3af);
+  flex-shrink: 0;
+}
+
+.schema-draft-status--has-draft {
+  color: #f97316;
+}
+
+/* Область схем (issue #234): селектбокс выбора игры/поддержки слева от кнопок
+   выбора типа схемы. Группируем их в один ряд, чтобы смотрелось цельно. */
+.schema-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.schema-game-select {
+  display: inline-flex;
+  position: relative;
+}
+
+.schema-game-select select {
+  width: auto;
+  min-height: 34px;
+  padding: 7px 30px 7px 12px;
+  border-color: #b8d8cc;
+  border-radius: 8px;
+  background-color: #e9f5ef;
+  /* Стильная стрелка вместо системной (issue #234). */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%231a6b53' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  color: var(--accent-strong);
+  font-weight: 650;
+  cursor: pointer;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+.schema-game-select select:hover {
+  border-color: #96c7b7;
+  background-color: #f1f8f4;
+}
+
+.schemas-layout {
+  display: grid;
+  grid-template-columns: minmax(210px, 250px) minmax(520px, 1fr) minmax(320px, 390px);
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.schema-palette,
+.schema-canvas,
+.schema-config {
+  height: 100%;
+  /* min-height: 0 позволяет grid-колонке быть ниже своего содержимого,
+     чтобы overflow: auto скроллил внутри панели, а не всё окно браузера. */
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+}
+
+.schema-canvas {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+}
+
+.schema-canvas .empty {
+  height: 100%;
+  border: 0;
+}
+
+.schema-canvas-dropzone {
+  width: 100%;
+  height: 100%;
+}
+
+.schema-meta-list {
+  grid-template-columns: 84px minmax(0, 1fr);
+  font-size: 13px;
+}
+
+.node-palette {
+  display: grid;
+  gap: 6px;
+}
+
+.node-palette-hint {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.node-palette-button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  min-height: 32px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfa;
+  color: var(--text);
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: grab;
+  user-select: none;
+}
+
+.node-palette-button:active {
+  cursor: grabbing;
+}
+
+.node-palette-button:hover {
+  border-color: #96c7b7;
+  background: #f1f8f4;
+}
+
+/* issue #248: недоступный в схеме узел показывается выключенным с подсказкой. */
+.node-palette-button--disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  background: #f3f4f4;
+  color: var(--muted);
+}
+
+.node-palette-button--disabled:hover {
+  border-color: var(--line);
+  background: #f3f4f4;
+}
+
+.node-palette-button--disabled:active {
+  cursor: not-allowed;
+}
+
+.node-palette-lock {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.blueprint-node {
+  position: relative;
+  width: 240px;
+  min-height: 126px;
+  border: 1px solid #5f6b70;
+  border-radius: 8px;
+  background: #263034;
+  color: #f7faf9;
+  box-shadow: 0 8px 18px rgba(32, 33, 36, 0.2);
+  font-size: 12px;
+}
+
+.blueprint-node.selected {
+  border-color: #f2b84b;
+  box-shadow: 0 0 0 2px rgba(242, 184, 75, 0.28), 0 8px 18px rgba(32, 33, 36, 0.22);
+}
+
+.blueprint-node.failed {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px rgba(179, 38, 30, 0.3), 0 8px 18px rgba(32, 33, 36, 0.22);
+}
+
+.blueprint-node-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: start;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  background: #344044;
+  border-radius: 7px 7px 0 0;
+}
+
+/* issue #248, ТЗ §5: цвет шапки узла по категории. */
+.blueprint-node-head--boundary {
+  background: #3b5b4a;
+}
+.blueprint-node-head--generation {
+  background: #4a3b63;
+}
+.blueprint-node-head--control {
+  background: #6b4a2f;
+}
+.blueprint-node-head--data {
+  background: #2f4a5e;
+}
+.blueprint-node-head--utility {
+  background: #3f474a;
+}
+
+/* Цветная левая кромка повторяет категорию шапки для быстрой идентификации. */
+.blueprint-node--generation {
+  border-left: 3px solid #a855f7;
+}
+.blueprint-node--control {
+  border-left: 3px solid #f59e0b;
+}
+.blueprint-node--data {
+  border-left: 3px solid #3b82f6;
+}
+.blueprint-node--utility {
+  border-left: 3px solid #9ca3af;
+}
+.blueprint-node--start {
+  border-left: 3px solid #31c48d;
+}
+.blueprint-node--end {
+  border-left: 3px solid #ef4444;
+}
+
+/* Ромбовидная метка категории «граница» у start/end (issue #248, ТЗ §5). */
+.blueprint-node--start .blueprint-node-title span::before,
+.blueprint-node--end .blueprint-node-title span::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  transform: rotate(45deg);
+  vertical-align: middle;
+}
+.blueprint-node--start .blueprint-node-title span::before {
+  background: #31c48d;
+}
+.blueprint-node--end .blueprint-node-title span::before {
+  background: #ef4444;
+}
+
+/* Контекстное меню canvas/узла/ребра (issue #248). */
+.schema-context-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 180px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel, #ffffff);
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.schema-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.schema-context-menu button:hover:not(:disabled) {
+  background: var(--hover, rgba(0, 0, 0, 0.06));
+}
+.schema-context-menu button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.schema-context-menu button.danger {
+  color: #ef4444;
+}
+
+/* Сегментированный переключатель режима (issue #248), например режим выхода loop. */
+.segmented {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.segmented-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.segmented-option.is-active {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.12);
+}
+.segmented-option input {
+  margin: 0;
+}
+
+.blueprint-node-title {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.blueprint-node-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 750;
+}
+
+.blueprint-node-title code {
+  color: #bec9cb;
+  font-size: 11px;
+}
+
+.blueprint-node-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: -2px -4px 0 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #dce5e2;
+}
+
+.blueprint-node-delete:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.blueprint-node-body {
+  min-height: 34px;
+  padding: 8px 10px;
+  color: #dce5e2;
+  overflow-wrap: anywhere;
+}
+
+.blueprint-port-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 0 8px 8px;
+}
+
+.blueprint-ports {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.blueprint-ports.output {
+  align-items: end;
+  text-align: right;
+}
+
+.blueprint-port-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 23px;
+  color: #edf3f1;
+}
+
+.blueprint-ports.output .blueprint-port-row {
+  justify-content: flex-end;
+}
+
+.blueprint-port-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.blueprint-ports.output .blueprint-port-label {
+  text-align: right;
+}
+
+.blueprint-handle {
+  position: static;
+  transform: none;
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  min-height: 10px;
+  flex: 0 0 10px;
+  pointer-events: all;
+}
+
+.blueprint-ports.input .blueprint-handle {
+  margin-left: -13px;
+}
+
+.blueprint-ports.output .blueprint-handle {
+  margin-right: -13px;
+}
+
+.schema-edge-exec .react-flow__edge-path,
+.schema-edge-data .react-flow__edge-path {
+  transition:
+    stroke 120ms ease,
+    stroke-width 120ms ease,
+    filter 120ms ease;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.schema-edge-exec .react-flow__edge-path {
+  stroke: #d39b31;
+  stroke-width: 2;
+}
+
+.schema-edge-data .react-flow__edge-path {
+  stroke: #647076;
+  stroke-width: 1.6;
+}
+
+.react-flow__edge.schema-edge-exec:hover .react-flow__edge-path,
+.react-flow__edge.schema-edge-exec.selected .react-flow__edge-path {
+  stroke: #f2b84b;
+  stroke-width: 3.4;
+  filter: drop-shadow(0 0 4px rgba(242, 184, 75, 0.55));
+}
+
+.react-flow__edge.schema-edge-data:hover .react-flow__edge-path,
+.react-flow__edge.schema-edge-data.selected .react-flow__edge-path {
+  stroke: #22a7df;
+  stroke-width: 3;
+  filter: drop-shadow(0 0 4px rgba(34, 167, 223, 0.45));
+}
+
+.schema-edge-list {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.schema-edge-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfa;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.schema-edge-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.schema-port-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.schema-port-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #fbfcfa;
+  color: #3d413a;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.schema-port-pill span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.schema-port-editor {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.schema-port-editor table {
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.schema-port-editor th,
+.schema-port-editor td {
+  padding: 6px 4px;
+}
+
+.schema-port-editor th.schema-port-drag-cell,
+.schema-port-editor td.schema-port-drag-cell {
+  width: 28px;
+  padding-left: 0;
+  padding-right: 2px;
+}
+
+.schema-port-table.inputs th:nth-child(2),
+.schema-port-table.inputs td:nth-child(2) {
+  width: 25%;
+}
+
+.schema-port-table.inputs th:nth-child(3),
+.schema-port-table.inputs td:nth-child(3) {
+  width: 24%;
+}
+
+.schema-port-table.inputs th:nth-child(4),
+.schema-port-table.inputs td:nth-child(4) {
+  width: 39%;
+}
+
+.schema-port-table.outputs th:nth-child(2),
+.schema-port-table.outputs td:nth-child(2) {
+  width: 30%;
+}
+
+.schema-port-table.outputs th:nth-child(3),
+.schema-port-table.outputs td:nth-child(3) {
+  width: 32%;
+}
+
+.schema-port-table.outputs th:nth-child(4),
+.schema-port-table.outputs td:nth-child(4) {
+  width: 26%;
+}
+
+.schema-port-editor th:last-child,
+.schema-port-editor td:last-child {
+  width: 34px;
+}
+
+.schema-port-editor input,
+.schema-port-editor select {
+  width: 100%;
+  min-width: 0;
+}
+
+.schema-port-drag-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: grab;
+}
+
+.schema-port-drag-button:hover,
+.schema-port-drag-button:focus-visible {
+  border-color: #96c7b7;
+  background: #f1f8f4;
+  color: var(--text);
+}
+
+.schema-port-drag-button:active {
+  cursor: grabbing;
+}
+
+.schema-port-row-dragging {
+  opacity: 0.55;
+}
+
+/* Строка редактора constant-узла (issue #319): горизонтальный flex с ручкой, именем,
+   типом, значением и кнопкой удаления. Колонки имеют фиксированную долю ширины, поэтому
+   поля в разных строках не смещаются (доработка из issue #319). */
+.constant-port-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.constant-port-row > input,
+.constant-port-row > select {
+  min-width: 0;
+}
+
+.constant-port-row > .schema-port-name-input {
+  flex: 0 0 30%;
+}
+
+.constant-port-row > .constant-type-select {
+  flex: 0 0 26%;
+}
+
+/* Ячейка значения: всегда flex:1, поэтому ширина колонки значения одинакова во всех
+   строках вне зависимости от типа (string/number/boolean/JSON). */
+.constant-value-cell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.constant-value-cell > input,
+.constant-value-cell > select {
+  flex: 1;
+  min-width: 0;
+}
+
+.constant-value-cell .expandable-textarea-toggle {
+  flex: 0 0 auto;
+}
+
+.constant-value-input-error {
+  border-color: var(--danger);
+}
+
+/* Сообщение об ошибке JSON под полем — переносится на свою строку внутри ячейки,
+   не растягивая колонку. */
+.constant-value-error {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 12px;
+}
+
+.schema-test-form {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/* Контекст выполнения суб-схемы при тестировании (issue #351): домен вызывающей
+   стороны (поддержка/игра) и выбор игры, сгруппированные над полями ввода. */
+.schema-test-context {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border, #d1d5db);
+}
+
+.schema-test-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 4px 0 12px;
+}
+
+.schema-test-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.schema-test-export-actions .editor-hint,
+.schema-test-export-actions .error-line {
+  margin: 0;
+}
+
+.schema-test-export-text {
+  min-height: min(62vh, 640px);
+  white-space: pre;
+}
+
+/* Узел с ошибкой в окне теста схемы (issue #266). */
+.schema-test-error-node {
+  margin-top: -4px;
+}
+
+.schema-test-error-node-link {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  margin-left: 4px;
+  color: var(--danger);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Полный лог исполнения схемы по узлам (issue #347): отчёт по каждой ноде потока и
+   по каждой pure-ноде, к которой был запрос данных. Строки таблицы кликабельны —
+   выделяют узел на canvas; упавший узел подсвечен. */
+.schema-test-node-trace table tbody tr {
+  cursor: pointer;
+}
+
+.schema-test-node-trace-row--failed td {
+  background: #fbe9e7;
+}
+
+/* Бейдж способа исполнения узла: «данные» (pure-зависимость) отличаем от «поток». */
+.badge-data {
+  background: #e7eefb;
+  color: #1d4ed8;
+}
+
+/* Лейбл сложной структуры с пиктограммой-подсказкой (issue #306): текст лейбла и
+   кнопка (?) в одну строку. */
+.editor-label-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Пиктограмма-подсказка (?) рядом с лейблом (issue #306). */
+.field-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.field-help-button:hover {
+  background: #f1f8f4;
+  color: var(--accent-strong);
+}
+
+/* Содержимое модалки справки по структуре (issue #306). */
+.schema-help-text {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.schema-help-example {
+  margin-bottom: 12px;
+}
+
+.schema-help-caption {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.schema-help-notes {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.login-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #eef1eb;
+}
+
+.login-panel {
+  display: grid;
+  gap: 14px;
+  width: min(420px, 100%);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+
+.login-panel label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.login-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #1d4c43;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    grid-template-columns: 1fr auto auto;
+  }
+
+  .brand span {
+    display: none;
+  }
+
+  .nav {
+    grid-column: 1 / -1;
+    order: 2;
+  }
+
+  .workspace {
+    padding-top: 92px;
+  }
+
+  .view-grid,
+  .view-grid.wide-detail {
+    grid-template-columns: 1fr;
+  }
+
+  .schemas-layout {
+    grid-template-columns: 1fr;
+    flex: none;
+    min-height: auto;
+  }
+
+  .schemas-view {
+    height: auto;
+  }
+
+  .schema-palette,
+  .schema-canvas,
+  .schema-config {
+    height: auto;
+    min-height: auto;
+  }
+
+  .schema-canvas {
+    height: 620px;
+    min-height: 620px;
+  }
+
+  .panel,
+  .detail-panel {
+    min-height: auto;
+    max-height: none;
+  }
+
+  .toolbar,
+  .toolbar.filters {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar input {
+    max-width: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .workspace {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .nav-button span {
+    display: none;
+  }
+
+  .meta-list {
+    grid-template-columns: 1fr;
+  }
+
+  .pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pagination-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .pagination-page {
+    min-width: auto;
+  }
+
+  th,
+  td {
+    padding: 8px 6px;
+    font-size: 13px;
+  }
+}
+
+/* Перехват ошибок интерфейса (issue #230): «красивая рамка» с отчётом,
+   готовым к копированию в задачу на доработку. */
+.error-frame-page {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 32px 16px;
+  background: #f4f5f2;
+}
+
+.error-frame-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background: rgba(32, 33, 36, 0.45);
+  overflow: auto;
+}
+
+.error-frame {
+  width: 100%;
+  max-width: 640px;
+  padding: 20px 22px;
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.error-frame-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.error-frame-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--danger);
+}
+
+.error-frame-message {
+  margin: 0 0 8px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.error-frame-hint {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.error-frame-report {
+  width: 100%;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafbf8;
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.error-frame .button-row {
+  margin-top: 12px;
+}
+
+/* Бейджи действий импорта бандла схем (issue #248). */
+.bundle-action {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.bundle-action--created {
+  background: rgba(31, 138, 112, 0.14);
+  color: var(--accent-strong);
+}
+.bundle-action--updated {
+  background: rgba(154, 91, 0, 0.14);
+  color: var(--warning);
+}
+.bundle-action--unchanged {
+  background: rgba(102, 107, 95, 0.14);
+  color: var(--muted);
+}
+
+/* Раскрытие окна редактирования текста (issue #285). Пиктограмма в строке заголовка
+   поля открывает большое модальное окно с панелью вставки портов (issue #308). */
+.expandable-textarea-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.expandable-textarea-title {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.expandable-textarea {
+  position: relative;
+}
+
+.expandable-textarea-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.expandable-textarea-toggle:hover,
+.expandable-textarea-toggle:focus-visible {
+  border-color: #96c7b7;
+  background: #f1f8f4;
+  color: var(--accent-strong);
+}
+
+.text-editor-modal {
+  width: min(960px, 100%);
+  height: min(720px, calc(100vh - 60px));
+  max-height: calc(100vh - 60px);
+}
+
+.text-editor-body {
+  display: flex;
+  flex: 1;
+  gap: 12px;
+  min-height: 0;
+}
+
+.text-editor-ports {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+  width: 180px;
+  max-height: 100%;
+  overflow: auto;
+}
+
+.text-editor-ports .subhead {
+  margin-top: 0;
+}
+
+.text-editor-port-button {
+  padding: 7px 10px;
+  border: 1px solid #b8d8cc;
+  border-radius: 6px;
+  background: #e9f5ef;
+  color: var(--accent-strong);
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.text-editor-port-button:hover,
+.text-editor-port-button:focus-visible {
+  border-color: #96c7b7;
+  background: #f1f8f4;
+}
+
+.text-editor-area {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+/* Обёртка textarea + строка ошибки валидации JSON в модальном редакторе
+   (issue #324): колонка, чтобы ошибка отображалась под полем, а не справа. */
+.text-editor-json-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.text-editor-json-area > textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+/* Место под строку ошибки зарезервировано всегда, чтобы поле не прыгало
+   при появлении/исчезновении сообщения (issue #324). */
+.text-editor-json-error {
+  margin: 4px 0 0;
+  min-height: 1.2em;
+}
+
+/* Редактор кода с подсветкой JS (issue #291): слой <pre> с раскрашенными
+   токенами лежит под textarea, у которой прозрачный текст, но видимый курсор.
+   Оба элемента используют одинаковые шрифт, отступы и перенос строк, поэтому
+   подсветка точно совпадает с вводимым текстом. */
+.code-editor-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.code-editor-highlight,
+.code-editor-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-sizing: border-box;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+
+.code-editor-highlight {
+  pointer-events: none;
+  background: var(--panel);
+  color: var(--text);
+  z-index: 0;
+}
+
+.code-editor-highlight code {
+  font: inherit;
+  background: none;
+  padding: 0;
+}
+
+.code-editor-input {
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  z-index: 1;
+}
+
+.code-editor-input::placeholder {
+  color: var(--muted);
+}
+
+/* Цвета токенов JS-подсветки (issue #291). */
+.tok-comment {
+  color: #7a8b85;
+  font-style: italic;
+}
+
+.tok-string {
+  color: #b5651d;
+}
+
+.tok-number {
+  color: #1d7a86;
+}
+
+.tok-keyword {
+  color: #9b2393;
+  font-weight: 600;
+}
+
+.tok-literal {
+  color: #1f6feb;
+}

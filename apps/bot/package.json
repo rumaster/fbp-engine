@@ -1,0 +1,25 @@
+{
+  "name": "@tg-games/bot",
+  "version": "0.9.40",
+  "description": "Telegram-боты tg-games: игровой бот и стек ботов поддержки",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "start:support": "node dist/botSupport/index.js",
+    "start:support:admin": "node dist/botSupportAdmin/index.js",
+    "dev": "tsx watch src/index.ts",
+    "dev:support": "tsx watch src/botSupport/index.ts",
+    "dev:support:admin": "tsx watch src/botSupportAdmin/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tg-games/core": "*",
+    "telegraf": "^4.16.3"
+  }
+}
