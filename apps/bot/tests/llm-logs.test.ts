@@ -6,7 +6,8 @@ describe('buildLlmRequestLogInputs (#83)', () => {
   it('строит строки аудита с провайдером, моделью, параметрами, токенами и стоимостью', () => {
     const entries: LLMCallLogEntry[] = [
       {
-        kind: 'narrative_generation',
+        schemaSlug: 'action-default',
+        nodeId: 'narrative',
         request: 'Промпт:\nсцена',
         response: '{"narrative":"ok"}',
         usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 },
@@ -29,7 +30,8 @@ describe('buildLlmRequestLogInputs (#83)', () => {
         userId: 'user-1',
         sessionId: 'sess-1',
         stepId: 'step-1',
-        requestKind: 'narrative_generation',
+        schemaSlug: 'action-default',
+        nodeId: 'narrative',
         provider: 'Google',
         model: 'gemini-1.5-flash',
         requestText: 'Промпт:\nсцена',
@@ -57,7 +59,8 @@ describe('buildLlmRequestLogInputs (#83)', () => {
     const rows = buildLlmRequestLogInputs(
       [
         {
-          kind: 'support_consultation',
+          schemaSlug: 'support-default',
+          nodeId: 'consult',
           request: 'Промпт:\nдиалог',
           response: 'Ошибка: rate limit',
           error: 'rate limit',
@@ -73,18 +76,18 @@ describe('buildLlmRequestLogInputs (#83)', () => {
     );
 
     expect(rows[0]).toMatchObject({
-      requestKind: 'support_consultation',
+      schemaSlug: 'support-default',
+      nodeId: 'consult',
       responseText: null,
       errorText: 'rate limit',
       costMillicents: 0,
     });
   });
 
-  it('поддерживает медиа-запросы как такие же строки аудита', () => {
+  it('поддерживает медиа-запросы как такие же строки аудита (без схемы)', () => {
     const rows = buildLlmRequestLogInputs(
       [
         {
-          kind: 'media_image',
           request: 'Провайдер: OpenAI (иллюстрация)\nПромпт: сцена',
           response: 'Изображение png, 100 байт.',
           usage: { promptTokens: 30, completionTokens: 70, totalTokens: 100 },
@@ -102,7 +105,8 @@ describe('buildLlmRequestLogInputs (#83)', () => {
     );
 
     expect(rows[0]).toMatchObject({
-      requestKind: 'media_image',
+      schemaSlug: null,
+      nodeId: null,
       provider: 'OpenAI',
       model: 'gpt-image-1',
       tokenUsage: {

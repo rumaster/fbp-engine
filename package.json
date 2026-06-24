@@ -1,6 +1,6 @@
 {
   "name": "tg-games",
-  "version": "0.9.45",
+  "version": "0.9.52",
   "description": "Telegram LLM RPG Bot — текстовые RPG-игры на базе LLM с движком-редуктором JSON-состояния",
   "license": "MIT",
   "private": true,

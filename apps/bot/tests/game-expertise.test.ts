@@ -116,7 +116,8 @@ describe('runGameExpertiseDetection (#154)', () => {
     );
     expect(r.keys).toEqual(['где переночевать', 'где найти еду']);
     expect(r.llmLog).toHaveLength(1);
-    expect(r.llmLog[0]).toMatchObject({ kind: 'game_expertise_detection' });
+    expect(r.llmLog[0].request).toBeTruthy();
+    expect(r.llmLog[0]).not.toHaveProperty('kind');
   });
 
   it('повторяет запрос при невалидном ответе', async () => {

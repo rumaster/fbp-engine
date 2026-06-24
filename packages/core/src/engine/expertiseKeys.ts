@@ -145,7 +145,6 @@ export async function runGameExpertiseDetection(
         provider,
         { prompt, systemInstruction, jsonMode: true },
         llmLog,
-        { kind: 'game_expertise_detection' },
       );
     } catch (err) {
       console.warn(

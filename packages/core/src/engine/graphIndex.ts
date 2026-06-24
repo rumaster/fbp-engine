@@ -340,7 +340,6 @@ export async function runDocumentExtraction(
         provider,
         { prompt, systemInstruction, jsonMode: true },
         llmLog,
-        { kind: 'graph_extraction' },
       );
     } catch (err) {
       console.warn(
@@ -427,7 +426,6 @@ export async function runGraphCritic(
         jsonMode: true,
       },
       llmLog,
-      { kind: 'graph_community_summary' },
     );
   } catch (err) {
     console.warn(

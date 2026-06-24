@@ -37,11 +37,16 @@ export interface SchemaTestRunInput {
   // его явно, для игровой/поддержки он задан классом. Подменяет callerKind, по
   // которому резолвятся вложенные суб-схемы и подбираются дефолты экспертизы.
   context?: 'support' | 'game';
+  // Путь к телу узла для изолированного теста (issue #390): список id узлов
+  // loop/graph_rag от корня графа к вложенному. Если задан — тест прогоняет не всю
+  // схему, а bodyGraph указанного узла, а `inputs` подаются ему как входы (значения
+  // входов самого узла), а не как выходы внутреннего start тела.
+  nodePath?: string[];
 }
 
 export interface SchemaTestLogEntry {
   nodeId: string;
-  kind?: string;
+  schemaSlug?: string;
   requestText?: string;
   responseText?: string;
   errorText?: string;
@@ -73,6 +78,12 @@ export interface SchemaTestNodeTraceEntry {
   outputKeys: string[];
   /** Снимок выходных данных узла (усечён для больших значений). */
   outputs: Record<string, unknown>;
+  /**
+   * Снимок входных данных узла (усечён для больших значений, issue #406). Для
+   * упавшего узла показывает, с какими входами он исполнялся, — чтобы оператор
+   * мог воспроизвести сбой по логу теста.
+   */
+  inputs: Record<string, unknown>;
   /** Slug схемы/суб-схемы, которой принадлежит узел. */
   schemaSlug: string;
   /** Глубина вложенности: 0 — корневой граф, 1+ — sub_schema/loop-тело. */
@@ -241,6 +252,58 @@ function schemaContractBadRequest(err: SchemaContractError): BadRequestException
   });
   exception.message = err.message;
   return exception;
+}
+
+/**
+ * Спускается по пути из id узлов loop/graph_rag к телу самого вложенного узла
+ * (issue #390). Возвращает bodyGraph, который и прогоняется изолированно: входы
+ * тестируемого узла подаются телу как его входы. Тело хранится в config.bodyGraph
+ * как сырой граф (он не проходит контракт-валидацию, т.к. graph_rag-тело содержит
+ * служебные graph_query-узлы), поэтому проверяем только базовую форму графа.
+ */
+export interface ResolvedNodeBody {
+  /** Тело самого вложенного узла пути — граф, который прогоняется изолированно. */
+  graph: AdminSchemaGraph;
+  /** Тип самого вложенного узла (loop/graph_rag) — от него зависят разрешения движка. */
+  nodeType: 'loop' | 'graph_rag';
+}
+
+export function resolveNodeBodyGraph(
+  graph: AdminSchemaGraph,
+  nodePath: readonly string[],
+): ResolvedNodeBody {
+  let current: AdminSchemaGraph = graph;
+  let nodeType: 'loop' | 'graph_rag' = 'loop';
+  const visited: string[] = [];
+  for (const nodeId of nodePath) {
+    if (!NODE_ID_RE.test(nodeId)) {
+      throw new BadRequestException(`Некорректный id узла в nodePath: ${nodeId}`);
+    }
+    const node = current.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) {
+      throw new BadRequestException(`Узел ${nodeId} не найден на пути ${visited.join(' / ') || 'корня графа'}`);
+    }
+    if (node.type !== 'loop' && node.type !== 'graph_rag') {
+      throw new BadRequestException(`Узел ${nodeId} типа ${node.type} не имеет тела для изолированного теста`);
+    }
+    const body = (node.config as Record<string, unknown>).bodyGraph;
+    if (!isBodyGraphLike(body)) {
+      throw new BadRequestException(`У узла ${nodeId} нет сохранённого тела (bodyGraph)`);
+    }
+    current = body;
+    nodeType = node.type;
+    visited.push(nodeId);
+  }
+  return { graph: current, nodeType };
+}
+
+function isBodyGraphLike(value: unknown): value is AdminSchemaGraph {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    Array.isArray(value.nodes) &&
+    Array.isArray(value.edges)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

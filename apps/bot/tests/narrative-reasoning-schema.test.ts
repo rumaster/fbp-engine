@@ -141,19 +141,28 @@ describe('пример рассуждающей суб-схемы генерац
     // это и есть рефлексивная обратная связь.
     expect(calls[3][0].systemInstruction).toContain('Слишком мягко');
 
-    // Кинды LLM-вызовов: анализ/критик — оценка мира, черновик — генерация нарратива.
-    expect(execContext.llmLog.map((entry) => entry.kind)).toEqual([
-      'world_state_evaluation',
-      'narrative_generation',
-      'world_state_evaluation',
-      'narrative_generation',
-      'world_state_evaluation',
+    // Источник LLM-вызовов по узлам (issue #403): анализ → цикл «черновик ↔ критик».
+    expect(execContext.llmLog.map((entry) => entry.nodeId)).toEqual([
+      'analysis',
+      'draft',
+      'critic',
+      'draft',
+      'critic',
+    ]);
+    // Слаг схемы-источника (issue #403): анализ — корневая схема, черновик и
+    // критик исполняются в теле цикла со своим слагом sub-схемы.
+    expect(execContext.llmLog.map((entry) => entry.schemaSlug)).toEqual([
+      'narrative_reasoning',
+      'narrative_reasoning_cycle',
+      'narrative_reasoning_cycle',
+      'narrative_reasoning_cycle',
+      'narrative_reasoning_cycle',
     ]);
   });
 
   it('граф-контекст подаётся в анализ и критика — абсурдное действие ловится по связи/сводке графа (issue #334)', async () => {
     const graph = loadExampleGraph();
-    // Graph RAG (issue #334, этап 7): выход graph_context узла ontology_query
+    // Graph RAG (issue #334, этап 7): графовый контекст
     // (локальный подграф + обзор сообществ) подаётся входом graph_context в фазы
     // анализа и критика суб-схемы. Здесь «убийственный» закон мира живёт ТОЛЬКО в
     // графе, а expertise намеренно нейтральна — так тест доказывает, что абсурдное

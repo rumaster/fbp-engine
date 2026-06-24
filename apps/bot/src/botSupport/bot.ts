@@ -3,7 +3,7 @@ import { message } from 'telegraf/filters';
 import type { AppConfig } from '@tg-games/core/config.js';
 import type { ILLMProvider } from '@tg-games/core/llm/ILLMProvider.js';
 import type { IEmbeddingProvider } from '@tg-games/core/llm/embeddings.js';
-import type { LLMCallKind, LLMCallLogEntry } from '@tg-games/core/llm/trace.js';
+import type { LLMCallLogEntry } from '@tg-games/core/llm/trace.js';
 import {
   buildLlmRequestLogInputs,
   insertLlmRequestLogsSafely,
@@ -163,21 +163,14 @@ export function createClientSupportBot(config: AppConfig, deps: ClientSupportDep
       pricing: route.pricing,
     });
 
-    // Записывает лог обращений к LLM, сделанных внутри схемы, маршрутизируя
-    // каждую запись по её kind (issue #238).
+    // Записывает лог обращений к LLM, сделанных внутри схемы. Все узлы поддержки
+    // идут через один глобальный default model (issue #345), поэтому модель
+    // разрешаем один раз; источник запроса (схема/узел) уже проставлен в каждой
+    // записи движком схемы (issue #403).
     const logSchemaSupportLlm = async (entries: LLMCallLogEntry[]): Promise<void> => {
-      const byKind = new Map<LLMCallKind, LLMCallLogEntry[]>();
-      for (const entry of entries) {
-        if (!entry.kind) continue;
-        const list = byKind.get(entry.kind) ?? [];
-        list.push(entry);
-        byKind.set(entry.kind, list);
-      }
-      const logs = [];
-      for (const [, list] of byKind) {
-        const route = await router.resolve(list[0].kind ?? 'support_consultation');
-        logs.push(...buildLlmRequestLogInputs(list, logContext(route)));
-      }
+      if (entries.length === 0) return;
+      const route = await router.resolve();
+      const logs = buildLlmRequestLogInputs(entries, logContext(route));
       await insertLlmRequestLogsSafely(logs, 'консультация поддержки (схема)');
     };
 

@@ -1,6 +1,6 @@
 {
   "name": "@tg-games/schema-contract",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "main": "index.cjs",
   "module": "index.mjs",

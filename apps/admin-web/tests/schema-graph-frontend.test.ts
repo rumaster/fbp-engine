@@ -6,6 +6,9 @@ import {
   buildSubSchemaTestInputs,
   defaultSubSchemaTestInputValues,
   subSchemaTestInputFields,
+  buildNodeBodyTestInputs,
+  defaultNodeBodyTestInputValues,
+  nodeBodyTestInputFields,
   canConnectGraphPorts,
   clipboardHasContent,
   connectGraphPorts,
@@ -16,18 +19,17 @@ import {
   duplicateGraphNodes,
   extractGraphClipboard,
   formatImportSummary,
+  getBodyGraph,
   getNodePaletteForSchema,
   getNodePorts,
   graphKindLabel,
   isCopyableNode,
   isTextEditingElement,
   loopModeFromConfig,
-  bodyGraphSlug,
   collapseLoopFrames,
-  getBodyGraph,
+  reopenBodyGraphFrames,
   getLoopBodyGraph,
   loopBodySlug,
-  makeEmptyBodyGraph,
   makeEmptyLoopBodyGraph,
   writeLoopBodyGraph,
   makeEmptyGraph,
@@ -763,6 +765,59 @@ describe('sub-schema test inputs by start node (issue #343)', () => {
   });
 });
 
+describe('node-body test inputs by node ports (issue #390)', () => {
+  // Поля изолированного теста тела узла строятся по входным data-портам самого
+  // тестируемого узла (loop → value; graph_rag → query/options), а не по граничным
+  // портам внутреннего start-узла тела.
+  function loopNode() {
+    const graph = makeEmptyGraph('action', 'action');
+    return createGraphNode(graph, 'loop', { x: 200, y: 0 });
+  }
+
+  function ragNode() {
+    const graph = makeEmptyGraph('action', 'action');
+    return createGraphNode(graph, 'graph_rag', { x: 200, y: 0 });
+  }
+
+  it('nodeBodyTestInputFields строит поле по входу value узла loop', () => {
+    const fields = nodeBodyTestInputFields(loopNode());
+    expect(fields.map((field) => field.key)).toEqual(['value']);
+    // value имеет тип any → редактируется как JSON.
+    expect(fields[0].kind).toBe('json');
+  });
+
+  it('nodeBodyTestInputFields строит поля по входам query/options узла graph_rag (issue #392)', () => {
+    const fields = nodeBodyTestInputFields(ragNode());
+    expect(fields.map((field) => field.key)).toEqual(['query', 'options']);
+    expect(fields[0].kind).toBe('text');
+    expect(fields[1].kind).toBe('json');
+  });
+
+  it('nodeBodyTestInputFields исключает exec-порты узла', () => {
+    const fields = nodeBodyTestInputFields(ragNode());
+    expect(fields.some((field) => field.key === 'exec')).toBe(false);
+  });
+
+  it('defaultNodeBodyTestInputValues даёт дефолт по типу каждого входа', () => {
+    expect(defaultNodeBodyTestInputValues(ragNode())).toEqual({ query: '', options: {} });
+  });
+
+  it('buildNodeBodyTestInputs приводит значения к типу входного порта узла', () => {
+    const inputs = buildNodeBodyTestInputs(ragNode(), undefined, {
+      query: 'Как начать игру?',
+      options: '{ "topK": 5 }',
+    });
+    expect(inputs).toEqual({ query: 'Как начать игру?', options: { topK: 5 } });
+  });
+
+  it('buildNodeBodyTestInputs подставляет дефолт для пустого поля', () => {
+    expect(buildNodeBodyTestInputs(ragNode(), undefined, { query: '', options: '' })).toEqual({
+      query: '',
+      options: {},
+    });
+  });
+});
+
 describe('schema bundle import (issue #248, item 1)', () => {
   const graphA = makeEmptyGraph('action', 'action');
   const graphH = makeEmptyGraph('hint', 'hint');
@@ -951,10 +1006,6 @@ describe('навигация по телу loop-узла (issue #337)', () => {
     expect(loopBodySlug('action', 'loop1')).toBe('action::loop:loop1');
   });
 
-  it('bodyGraphSlug строит отдельный slug для тела ontology_query', () => {
-    expect(bodyGraphSlug('action', 'oq1', 'ontology_query')).toBe('action::ontology_query:oq1');
-  });
-
   it('makeEmptyLoopBodyGraph наследует kind родителя и содержит start/end', () => {
     const parent = makeEmptyGraph('action', 'action');
     const body = makeEmptyLoopBodyGraph(parent, 'loop1');
@@ -977,33 +1028,6 @@ describe('навигация по телу loop-узла (issue #337)', () => {
     const body = getLoopBodyGraph(root, 'loop1');
     expect(body.slug).toBe('action::loop:loop1');
     expect(body.nodes.map((node) => node.id)).toEqual(['start', 'end']);
-  });
-
-  it('getBodyGraph для ontology_query создаёт каноническое common-тело graph retriever', () => {
-    const base = makeEmptyGraph('action', 'action');
-    const root = {
-      ...base,
-      nodes: [
-        ...base.nodes,
-        { id: 'oq1', type: 'ontology_query', position: { x: 260, y: 60 }, config: {}, label: 'Ontology' },
-      ],
-    };
-    const body = getBodyGraph(root, 'oq1');
-    const explicit = makeEmptyBodyGraph(root, 'oq1', 'ontology_query');
-    expect(body).toEqual(explicit);
-    expect(body.slug).toBe('action::ontology_query:oq1');
-    expect(body.subSchemaClass).toBe('common');
-    expect(body.nodes.map((node) => node.type)).toEqual([
-      'start',
-      'ontology_anchor_match',
-      'ontology_frontier_expand',
-      'ontology_budget_select',
-      'ontology_context_build',
-      'end',
-    ]);
-    expect(body.edges.map((edge) => `${edge.from}.${edge.fromPort}->${edge.to}.${edge.toPort}`)).toContain(
-      'context_build.graph_context->end.graph_context',
-    );
   });
 
   it('getLoopBodyGraph читает сохранённое тело и возвращает его копию', () => {
@@ -1064,5 +1088,89 @@ describe('навигация по телу loop-узла (issue #337)', () => {
     expect(outer.nodes.map((node) => node.id)).toContain(innerLoopId);
     const inner = outer.nodes.find((node) => node.id === innerLoopId)?.config.bodyGraph as SchemaGraph;
     expect(inner.nodes.map((node) => node.id)).toContain('leaf');
+  });
+
+  // Восстановление открытых тел узлов после сохранения схемы (issue #393): редактор
+  // не должен закрывать открытую схему узла и сбрасывать камеру при сохранении.
+  it('reopenBodyGraphFrames пустой стек возвращает корень как лист без кадров', () => {
+    const root = rootWithLoop();
+    const result = reopenBodyGraphFrames(root, []);
+    expect(result.frames).toEqual([]);
+    expect(result.leaf).toBe(root);
+  });
+
+  it('reopenBodyGraphFrames восстанавливает вложенный путь на свежем корне', () => {
+    // Свежий корень с outer-циклом, в чьём теле лежит inner-цикл с узлом leaf.
+    const root = rootWithLoop('outer');
+    const outerBody = getLoopBodyGraph(root, 'outer');
+    const innerLoopId = 'inner';
+    const innerBodyWithLeaf: SchemaGraph = (() => {
+      const outerWithInner: SchemaGraph = {
+        ...outerBody,
+        nodes: [
+          ...outerBody.nodes,
+          { id: innerLoopId, type: 'loop', position: { x: 200, y: 60 }, config: {}, label: 'Внутр' },
+        ],
+      };
+      const innerBody = getLoopBodyGraph(outerWithInner, innerLoopId);
+      const editedInner: SchemaGraph = {
+        ...innerBody,
+        nodes: [
+          ...innerBody.nodes,
+          { id: 'leaf', type: 'action', position: { x: 100, y: 100 }, config: {}, label: 'Лист' },
+        ],
+      };
+      return collapseLoopFrames(
+        [
+          { parentGraph: root, loopNodeId: 'outer' },
+          { parentGraph: outerWithInner, loopNodeId: innerLoopId },
+        ],
+        editedInner,
+      );
+    })();
+
+    // Старый стек ссылается на устаревшие снимки родителей — восстанавливаем по пути id.
+    const staleFrames = [
+      { parentGraph: root, loopNodeId: 'outer' },
+      { parentGraph: outerBody, loopNodeId: innerLoopId },
+    ];
+    const result = reopenBodyGraphFrames(innerBodyWithLeaf, staleFrames);
+
+    expect(result.frames.map((frame) => frame.loopNodeId)).toEqual(['outer', innerLoopId]);
+    expect(result.frames[0].parentGraph).toBe(innerBodyWithLeaf);
+    expect(result.frames.every((frame) => frame.nodeType === 'loop')).toBe(true);
+    // Лист — тело внутреннего цикла с сохранённым узлом leaf.
+    expect(result.leaf.nodes.map((node) => node.id)).toContain('leaf');
+  });
+
+  it('reopenBodyGraphFrames останавливается, если узел пути исчез из графа', () => {
+    // Корень без loop-узла: путь обрывается на первом же кадре.
+    const root = makeEmptyGraph('action', 'action');
+    const staleFrames = [{ parentGraph: rootWithLoop(), loopNodeId: 'loop1' }];
+    const result = reopenBodyGraphFrames(root, staleFrames);
+    expect(result.frames).toEqual([]);
+    expect(result.leaf).toBe(root);
+  });
+});
+
+describe('graph_rag bodyGraph (issue #386)', () => {
+  it('createGraphNode создаёт graph_rag с дефолтным телом и скрытым graph_query', () => {
+    const graph = makeEmptyGraph('action', 'action');
+    const node = createGraphNode(graph, 'graph_rag', { x: 240, y: 0 });
+
+    expect(node.config.maxIterations).toBe(3);
+    const body = node.config.bodyGraph as SchemaGraph;
+    expect(body.slug).toBe(`action::graph_rag:${node.id}`);
+    expect(body.subSchemaClass).toBe('common');
+    expect(body.nodes.some((candidate) => candidate.type === 'graph_query')).toBe(true);
+
+    const withNode = { ...graph, nodes: [...graph.nodes, node] };
+    const read = getBodyGraph(withNode, node.id);
+    expect(read.nodes.some((candidate) => candidate.type === 'graph_query')).toBe(true);
+    read.nodes.push({ id: 'probe', type: 'log', position: { x: 0, y: 0 }, config: {} });
+    expect(((node.config.bodyGraph as SchemaGraph).nodes).some((candidate) => candidate.id === 'probe')).toBe(false);
+
+    expect(getNodePaletteForSchema('action')).toContain('graph_rag');
+    expect(getNodePaletteForSchema('action')).not.toContain('graph_query');
   });
 });

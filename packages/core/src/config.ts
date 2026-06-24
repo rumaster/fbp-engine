@@ -302,6 +302,39 @@ function resolveEmbeddingAzureConfig(provider: EmbeddingProviderName): AppConfig
   };
 }
 
+/**
+ * Конфигурация подключения к PostgreSQL.
+ *
+ * Вынесена из {@link loadConfig} отдельно, потому что миграциям (issue #408)
+ * и пулу подключений нужна только она — без полного конфига приложения, который
+ * требует `TELEGRAM_BOT_TOKEN`. Все поля имеют значения по умолчанию, поэтому
+ * загрузка параметров БД никогда не падает из-за незаданного токена бота.
+ */
+export function loadDbConfig(): AppConfig['db'] {
+  return {
+    host: optional('DB_HOST', 'localhost'),
+    port: Number(optional('DB_PORT', '5432')),
+    user: optional('DB_USER', 'postgres'),
+    password: optional('DB_PASSWORD', 'postgres_password'),
+    database: optional('DB_NAME', 'tg_rpg_db'),
+  };
+}
+
+/**
+ * Конфигурация подключения к Neo4j.
+ *
+ * Как и {@link loadDbConfig}, отделена от полного конфига приложения, чтобы
+ * миграции и драйвер графа не требовали `TELEGRAM_BOT_TOKEN` (issue #408).
+ */
+export function loadNeo4jConfig(): AppConfig['neo4j'] {
+  return {
+    uri: optional('NEO4J_URI', 'bolt://localhost:7687'),
+    user: optional('NEO4J_USER', 'neo4j'),
+    password: optional('NEO4J_PASSWORD', 'neo4j_password'),
+    database: optional('NEO4J_DATABASE', 'neo4j'),
+  };
+}
+
 let cached: AppConfig | null = null;
 
 /**
@@ -337,19 +370,8 @@ export function loadConfig(): AppConfig {
       providerKeys: resolveProviderKeys(),
       ...(azure ? { azure } : {}),
     },
-    db: {
-      host: optional('DB_HOST', 'localhost'),
-      port: Number(optional('DB_PORT', '5432')),
-      user: optional('DB_USER', 'postgres'),
-      password: optional('DB_PASSWORD', 'postgres_password'),
-      database: optional('DB_NAME', 'tg_rpg_db'),
-    },
-    neo4j: {
-      uri: optional('NEO4J_URI', 'bolt://localhost:7687'),
-      user: optional('NEO4J_USER', 'neo4j'),
-      password: optional('NEO4J_PASSWORD', 'neo4j_password'),
-      database: optional('NEO4J_DATABASE', 'neo4j'),
-    },
+    db: loadDbConfig(),
+    neo4j: loadNeo4jConfig(),
     millicentsPerStar: Number(optional('MILLICENTS_PER_STAR', '2000')),
     embedding: {
       provider: embeddingProvider,

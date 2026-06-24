@@ -51,9 +51,9 @@ function traceResponse() {
     durationMs: 7,
     costMillicents: 0,
     nodeTrace: [
-      { order: 1, nodeId: 'start', nodeType: 'start', via: 'flow', durationMs: 1, outputKeys: ['value'], outputs: { value: 5 }, schemaSlug: 'action', depth: 0, failed: false },
-      { order: 2, nodeId: 'transform', nodeType: 'transform', via: 'data', durationMs: 2, outputKeys: ['result'], outputs: { result: 10 }, schemaSlug: 'action', depth: 0, failed: false },
-      { order: 3, nodeId: 'end', nodeType: 'end', via: 'flow', durationMs: 1, outputKeys: ['result'], outputs: { result: 10 }, schemaSlug: 'action', depth: 0, failed: false },
+      { order: 1, nodeId: 'start', nodeType: 'start', via: 'flow', durationMs: 1, outputKeys: ['value'], outputs: { value: 5 }, inputs: {}, schemaSlug: 'action', depth: 0, failed: false },
+      { order: 2, nodeId: 'transform', nodeType: 'transform', via: 'data', durationMs: 2, outputKeys: ['result'], outputs: { result: 10 }, inputs: { value: 5 }, schemaSlug: 'action', depth: 0, failed: false },
+      { order: 3, nodeId: 'end', nodeType: 'end', via: 'flow', durationMs: 1, outputKeys: ['result'], outputs: { result: 10 }, inputs: { result: 10 }, schemaSlug: 'action', depth: 0, failed: false },
     ],
   };
 }

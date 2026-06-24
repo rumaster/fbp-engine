@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AdminDataService } from '../src/admin/admin-data.service';
-import { normalizeSchemaGraph } from '../src/admin/schema-graph';
+import { normalizeSchemaGraph, resolveNodeBodyGraph } from '../src/admin/schema-graph';
 import type { DatabaseService } from '../src/database/database.service';
 
 type QueryMock = ReturnType<typeof vi.fn>;
@@ -363,7 +363,7 @@ describe('AdminDataService schemas', () => {
 
     expect(result.outputs).toMatchObject({ narrative: 'готово' });
     expect(result.llmLog).toHaveLength(2);
-    expect(result.llmLog[0]).toMatchObject({ nodeId: 'llm', kind: 'narrative_generation' });
+    expect(result.llmLog[0]).toMatchObject({ nodeId: 'llm', schemaSlug: 'action' });
     expect(result.costMillicents).toBeGreaterThan(0);
     expect(query.mock.calls.some(([sql]) => isSql(sql, 'FROM model_defaults'))).toBe(true);
     expect(query.mock.calls.some(([sql]) => isSql(sql, 'FROM model_rules'))).toBe(false);
@@ -441,10 +441,17 @@ describe('AdminDataService schemas', () => {
       .catch((err: unknown) => {
         const response = (err as { response?: { nodeTrace?: unknown } }).response ?? {};
         expect(Array.isArray(response.nodeTrace)).toBe(true);
-        const trace = response.nodeTrace as Array<{ nodeId: string; failed: boolean }>;
+        const trace = response.nodeTrace as Array<{
+          nodeId: string;
+          failed: boolean;
+          inputs?: Record<string, unknown>;
+        }>;
         // Упавший узел (transform) присутствует в отчёте и помечен как ошибочный.
         const failed = trace.find((entry) => entry.failed);
         expect(failed?.nodeId).toBe('transform');
+        // В лог теста попадают входы упавшего узла (issue #406): transform получил
+        // value со start (ctx.inputs.value === 4).
+        expect(failed?.inputs).toEqual({ value: 4 });
       });
   });
 
@@ -1163,5 +1170,156 @@ describe('AdminDataService sub-schemas (issue #310)', () => {
         message: expect.stringContaining('не найдена'),
       },
     });
+  });
+});
+
+// Изолированный тест тела узла (issue #390): когда редактор находится внутри тела
+// узла loop/graph_rag, тест должен прогонять только это тело, а его входами служат
+// порты самого тестируемого узла. На сервер приходит nodePath — путь по узлам с
+// телом от корня графа до тестируемого узла.
+
+// Корневой граф с узлом loop, в теле которого лежит граф graph() (start →
+// transform(value+1) → end). Сам корневой граф при тесте по nodePath не исполняется.
+function parentWithLoopGraph() {
+  return {
+    version: 1,
+    schemaType: 'action',
+    slug: 'action',
+    variables: {},
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      {
+        id: 'loop1',
+        type: 'loop',
+        position: { x: 200, y: 0 },
+        config: { maxIterations: 3, bodyGraph: graph() },
+      },
+      { id: 'end', type: 'end', position: { x: 400, y: 0 }, config: {} },
+    ],
+    edges: [
+      { id: 'start-loop', from: 'start', fromPort: 'exec', to: 'loop1', toPort: 'exec' },
+      { id: 'loop-end', from: 'loop1', fromPort: 'exec', to: 'end', toPort: 'exec' },
+    ],
+  };
+}
+
+// Тело graph_rag: start → transform(query + "!") → end. Дополнительно содержит
+// несвязанный узел graph_query — он не исполняется, но требует, чтобы контракт
+// графа допускал внутренний graph_query (так подтверждается флаг изоляции #390).
+function ragBodyGraph() {
+  return {
+    version: 1,
+    schemaType: 'action',
+    slug: 'action::graph_rag:rag1',
+    variables: {},
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      {
+        id: 'transform',
+        type: 'transform',
+        position: { x: 200, y: 0 },
+        config: { code: 'return String(input.query) + "!";', output: 'result' },
+      },
+      { id: 'gq', type: 'graph_query', position: { x: 200, y: 160 }, config: {} },
+      { id: 'end', type: 'end', position: { x: 400, y: 0 }, config: {} },
+    ],
+    edges: [
+      { id: 'start-end', from: 'start', fromPort: 'exec', to: 'end', toPort: 'exec' },
+      { id: 'query', from: 'start', fromPort: 'query', to: 'transform', toPort: 'query' },
+      { id: 'result', from: 'transform', fromPort: 'result', to: 'end', toPort: 'result' },
+    ],
+  };
+}
+
+// Корневой граф с узлом graph_rag, в теле которого лежит ragBodyGraph().
+function parentWithRagGraph() {
+  return {
+    version: 1,
+    schemaType: 'action',
+    slug: 'action',
+    variables: {},
+    nodes: [
+      { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+      {
+        id: 'rag1',
+        type: 'graph_rag',
+        position: { x: 200, y: 0 },
+        config: { maxIterations: 2, bodyGraph: ragBodyGraph() },
+      },
+      { id: 'end', type: 'end', position: { x: 400, y: 0 }, config: {} },
+    ],
+    edges: [
+      { id: 'start-rag', from: 'start', fromPort: 'exec', to: 'rag1', toPort: 'exec' },
+      { id: 'rag-end', from: 'rag1', fromPort: 'exec', to: 'end', toPort: 'exec' },
+    ],
+  };
+}
+
+describe('AdminDataService isolated node-body test (issue #390)', () => {
+  it('resolveNodeBodyGraph возвращает тело loop-узла и его тип', () => {
+    const resolved = resolveNodeBodyGraph(parentWithLoopGraph() as never, ['loop1']);
+    expect(resolved.nodeType).toBe('loop');
+    expect(resolved.graph).toMatchObject({ version: 1, slug: 'action' });
+    expect(resolved.graph.nodes.some((node) => node.id === 'transform')).toBe(true);
+  });
+
+  it('resolveNodeBodyGraph возвращает тело graph_rag-узла и его тип', () => {
+    const resolved = resolveNodeBodyGraph(parentWithRagGraph() as never, ['rag1']);
+    expect(resolved.nodeType).toBe('graph_rag');
+    expect(resolved.graph.nodes.some((node) => node.type === 'graph_query')).toBe(true);
+  });
+
+  it('resolveNodeBodyGraph отвергает несуществующий узел в nodePath', () => {
+    expect(() => resolveNodeBodyGraph(parentWithLoopGraph() as never, ['missing'])).toThrow(
+      /не найден/,
+    );
+  });
+
+  it('resolveNodeBodyGraph отвергает узел без тела', () => {
+    expect(() => resolveNodeBodyGraph(parentWithLoopGraph() as never, ['start'])).toThrow(
+      /не имеет тела/,
+    );
+  });
+
+  it('testSchema по nodePath прогоняет только тело loop-узла с его входами', async () => {
+    const query = vi.fn(async (sql: unknown) => {
+      if (isSql(sql, 'FROM schemas')) return { rows: [schemaRow({ graph_json: parentWithLoopGraph() })] };
+      if (isSql(sql, 'INSERT INTO schema_execution_log')) return { rows: [] };
+      return { rows: [] };
+    });
+    const service = new AdminDataService(makeDatabase(query));
+
+    const result = await service.testSchema('action', { inputs: { value: 4 }, nodePath: ['loop1'] });
+
+    // Возвращён выход тела (value + 1), а не выход всей схемы — тело исполнено изолированно.
+    expect(result.outputs).toEqual({ result: 5 });
+  });
+
+  it('testSchema по nodePath прогоняет тело graph_rag с внутренним graph_query', async () => {
+    const query = vi.fn(async (sql: unknown) => {
+      if (isSql(sql, 'FROM schemas')) return { rows: [schemaRow({ graph_json: parentWithRagGraph() })] };
+      if (isSql(sql, 'INSERT INTO schema_execution_log')) return { rows: [] };
+      return { rows: [] };
+    });
+    const service = new AdminDataService(makeDatabase(query));
+
+    // Без флага изоляции тело graph_rag не прошло бы контракт (graph_query запрещён вне
+    // graph_rag). Тест проверяет, что вход query тестируемого узла подаётся телу.
+    const result = await service.testSchema('action', { inputs: { query: 'тест' }, nodePath: ['rag1'] });
+
+    expect(result.outputs).toEqual({ result: 'тест!' });
+  });
+
+  it('testSchema отклоняет nodePath на узел без тела', async () => {
+    const query = vi.fn(async (sql: unknown) => {
+      if (isSql(sql, 'FROM schemas')) return { rows: [schemaRow({ graph_json: parentWithLoopGraph() })] };
+      if (isSql(sql, 'INSERT INTO schema_execution_log')) return { rows: [] };
+      return { rows: [] };
+    });
+    const service = new AdminDataService(makeDatabase(query));
+
+    await expect(
+      service.testSchema('action', { inputs: {}, nodePath: ['start'] }),
+    ).rejects.toThrow(/не имеет тела/);
   });
 });

@@ -14,11 +14,8 @@ export type NodeType =
   | 'end'
   | 'llm_request'
   | 'knowledge_query'
-  | 'ontology_query'
-  | 'ontology_anchor_match'
-  | 'ontology_frontier_expand'
-  | 'ontology_budget_select'
-  | 'ontology_context_build'
+  | 'graph_rag'
+  | 'graph_query'
   | 'game_memory_read'
   | 'game_memory_write'
   | 'manifest'
@@ -51,9 +48,6 @@ export type PortType =
 
 export type PortDirection = 'input' | 'output';
 
-// Режим ретрива узла ontology_query (issue #334, Graph RAG).
-export type OntologyQueryMode = 'local' | 'global' | 'hybrid';
-
 export type SchemaContractErrorCode =
   | 'duplicate_node_id'
   | 'node_type_blocked'
@@ -67,6 +61,7 @@ export type SchemaContractErrorCode =
   | 'incompatible_ports'
   | 'duplicate_data_input'
   | 'invalid_loop_limits'
+  | 'invalid_graph_rag_limits'
   | 'invalid_llm_ports_shape'
   | 'invalid_llm_port_name'
   | 'invalid_llm_port_type'
@@ -85,13 +80,6 @@ export type SchemaContractErrorCode =
   | 'invalid_boundary_port_id'
   | 'invalid_boundary_port_type'
   | 'duplicate_boundary_port'
-  | 'invalid_ontology_mode'
-  | 'missing_ontology_mode'
-  | 'missing_ontology_body_graph'
-  | 'invalid_ontology_body_graph'
-  | 'missing_ontology_graph_source'
-  | 'missing_ontology_anchor_source'
-  | 'missing_ontology_options'
   | 'exec_cycle';
 
 export interface NodeDefinition {
@@ -151,6 +139,10 @@ export interface SchemaNodePolicy {
   blocked: readonly NodeType[];
 }
 
+export interface SchemaGraphValidationOptions {
+  allowInternalGraphQuery?: boolean;
+}
+
 export class SchemaContractError extends Error {
   readonly code: SchemaContractErrorCode;
   readonly details: Record<string, unknown>;
@@ -160,9 +152,6 @@ export class SchemaContractError extends Error {
 export const SCHEMA_TYPES: readonly SchemaType[];
 export const NODE_TYPES: readonly NodeType[];
 export const PORT_TYPES: readonly PortType[];
-export const ONTOLOGY_QUERY_MODES: readonly OntologyQueryMode[];
-export const DEFAULT_ONTOLOGY_QUERY_MODE: OntologyQueryMode;
-export const ONTOLOGY_QUERY_MODE_LABELS: Readonly<Record<OntologyQueryMode, string>>;
 export const SCHEMA_TABS: readonly SchemaTab[];
 export const NODE_TYPE_LABELS: Readonly<Record<NodeType, string>>;
 export const BASE_NODE_PALETTE: readonly NodeType[];
@@ -198,8 +187,6 @@ export function isSubSchemaUsableIn(
 ): boolean;
 export function isNodeType(value: unknown): value is NodeType;
 export function isPortType(value: unknown): value is PortType;
-export function isOntologyQueryMode(value: unknown): value is OntologyQueryMode;
-export function ontologyQueryMode(value: unknown): OntologyQueryMode | null;
 export function isExecPortId(portId: string): boolean;
 export function isMergeExecInputId(portId: string): boolean;
 export function mergeExecInputPortIds(node: NodeDefinition, graph?: SchemaGraph): string[];
@@ -226,4 +213,8 @@ export function getNodePortDefinitions(
   node: NodeDefinition,
   graph?: SchemaGraph,
 ): { inputs: PortDefinition[]; outputs: PortDefinition[] };
-export function validateSchemaGraphContract(graph: SchemaGraph): void;
+export function buildDefaultGraphRagBodyGraph(parentSlug?: string, nodeId?: string): SchemaGraph;
+export function validateSchemaGraphContract(
+  graph: SchemaGraph,
+  options?: SchemaGraphValidationOptions,
+): void;

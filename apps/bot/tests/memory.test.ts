@@ -181,7 +181,7 @@ describe('parseMemoryExtraction (#166)', () => {
 });
 
 describe('runMemoryExtraction (#166)', () => {
-  it('возвращает новые факты и лог с нужным kind при валидном ответе', async () => {
+  it('возвращает новые факты и лог при валидном ответе', async () => {
     const provider = stubProvider([
       '{"memory":[{"content":"Мост сожжён.","category":"мир","importance":3}]}',
     ]);
@@ -197,7 +197,8 @@ describe('runMemoryExtraction (#166)', () => {
     );
     expect(r.added).toEqual([{ content: 'Мост сожжён.', category: 'мир', importance: 3 }]);
     expect(r.llmLog).toHaveLength(1);
-    expect(r.llmLog[0]).toMatchObject({ kind: 'game_memory_extraction' });
+    expect(r.llmLog[0].request).toBeTruthy();
+    expect(r.llmLog[0]).not.toHaveProperty('kind');
   });
 
   it('повторяет запрос при невалидном ответе', async () => {

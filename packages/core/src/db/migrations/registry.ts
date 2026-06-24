@@ -59,6 +59,12 @@ function readCypherMigration(file: string): string {
   return readFileSync(path, 'utf8');
 }
 
+/** Читает текст версионной SQL-миграции из `migrations/postgres/` (issue #336, О4). */
+function readPostgresMigration(file: string): string {
+  const path = fileURLToPath(new URL(`./postgres/${file}`, import.meta.url));
+  return readFileSync(path, 'utf8');
+}
+
 /**
  * Разбивает .cypher-файл на отдельные операторы: Neo4j `tx.run()` выполняет ровно
  * один statement за вызов. Сначала отбрасываем строки-комментарии (`//`), затем
@@ -94,6 +100,14 @@ export const postgresMigrations: readonly PostgresMigration[] = [
     transactional: false,
     async run() {
       await migratePromptTemplatesToSchemas();
+    },
+  },
+  {
+    version: '0003',
+    name: 'llm_logs_schema_node',
+    // Чистый SQL: чистка старых логов + смена колонок источника запроса (issue #403).
+    async run(query) {
+      await query(readPostgresMigration('0003_llm_logs_schema_node.sql'));
     },
   },
 ];

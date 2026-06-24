@@ -1,6 +1,6 @@
 import vm from 'node:vm';
 import type { ILLMProvider } from '../llm/ILLMProvider.js';
-import { generateTextWithLog, type LLMCallKind, type LLMCallLogEntry } from '../llm/trace.js';
+import { generateTextWithLog, type LLMCallLogEntry } from '../llm/trace.js';
 import type { ModelRouter } from '../llm/router.js';
 import type { IEmbeddingProvider } from '../llm/embeddings.js';
 import type { IMediaProvider } from '../media/IMediaProvider.js';
@@ -12,18 +12,6 @@ import {
   type GameExpertiseDoc,
 } from './expertiseKeys.js';
 import { retrieveGameExpertise, retrieveSupportExpertise } from './expertiseRetrieval.js';
-import {
-  extractSubgraph,
-  matchAnchors,
-  type OntologyGraph,
-  type OntologySubgraph,
-  type OntologyContext,
-  type OntologyTraversalOptions,
-} from './ontologyRetrieval.js';
-import { buildOntologyBlock } from './ontology.js';
-import { buildGraphContext, type CommunitySummary } from './graphRetrieval.js';
-import { loadGameOntology } from '../db/repositories/ontology.js';
-import { loadGameCommunities } from '../db/repositories/ontologyGraph.js';
 import {
   buildMemoryBlock,
   runMemoryExtraction,
@@ -38,8 +26,8 @@ import {
 } from './promptTemplates.js';
 import { extractJson } from './validation.js';
 import {
+  buildDefaultGraphRagBodyGraph,
   execInputPortIds,
-  isOntologyQueryMode,
   isExecPortId,
   isPortType,
   validateSchemaGraphContract,
@@ -49,6 +37,10 @@ import {
   type PortType,
   type SchemaGraph,
 } from '@tg-games/schema-contract';
+import {
+  queryKnowledgeGraph,
+  type GraphQueryConcept,
+} from '../db/repositories/agenticGraphRag.js';
 
 export type {
   EdgeDefinition,
@@ -96,6 +88,14 @@ export interface SchemaNodeTraceEntry {
   outputKeys: string[];
   /** Снимок выходных данных узла (для показа в отчёте). */
   outputs: Record<string, unknown>;
+  /**
+   * Снимок входных данных узла — значения, пришедшие по data-портам от узлов-
+   * источников (issue #406). Нужен в первую очередь для упавших узлов: когда узел
+   * бросает ошибку, оператор видит в логе теста, с какими именно входами он
+   * исполнялся, и может воспроизвести сбой. Заполняется по уже посчитанным выходам
+   * источников, поэтому новых исполнений узлов не вызывает.
+   */
+  inputs: Record<string, unknown>;
   /** Slug схемы/суб-схемы, которой принадлежит узел (вложенность, issue #347). */
   schemaSlug: string;
   /** Глубина вложенности: 0 — корневой граф, 1+ — sub_schema/loop-тело. */
@@ -161,6 +161,16 @@ export interface SchemaExecutionContext {
    * не влияет: её домен однозначно задан собственным `schemaType`.
    */
   expertiseDomain?: 'support' | 'game';
+  /**
+   * Тестовый/интеграционный hook для внутреннего `graph_query` (#386). В боевом
+   * рантайме не задаётся: узел читает Neo4j через queryKnowledgeGraph.
+   */
+  graphQuery?: (
+    keys: string[],
+    options: { gameId: string; embeddingProvider?: IEmbeddingProvider; topK?: number },
+  ) => Promise<GraphQueryConcept[]>;
+  /** Внутренний флаг: `graph_query` разрешён только при исполнении bodyGraph `graph_rag`. */
+  internalGraphQueryAllowed?: boolean;
 }
 
 export class SchemaNodeExecutionError extends Error {
@@ -238,21 +248,6 @@ interface TransformOutputConfig {
 
 type ResolveSourceOutputs = (nodeId: string) => Promise<Record<string, unknown> | null>;
 
-const LLM_CALL_KINDS = new Set<LLMCallKind>([
-  'support_consultation',
-  'support_expertise_detection',
-  'support_document_filter',
-  'support_compilation',
-  'hint_generation',
-  'game_expertise_detection',
-  'game_memory_extraction',
-  'narrative_generation',
-  'world_state_evaluation',
-  'media_speech',
-  'media_image',
-  'media_transcription',
-]);
-
 const FORBIDDEN_EXPRESSION_TOKENS =
   /\b(?:process|globalThis|global|window|document|Function|eval|require|import|constructor|prototype|__proto__|this)\b/;
 
@@ -267,7 +262,7 @@ export async function executeSchema(
   graph: SchemaGraph,
   ctx: SchemaExecutionContext,
 ): Promise<Record<string, unknown>> {
-  validateSchemaGraphContract(graph);
+  validateSchemaGraphContract(graph, { allowInternalGraphQuery: ctx.internalGraphQueryAllowed === true });
 
   for (const [name, value] of Object.entries(graph.variables ?? {})) {
     if (!ctx.variables.has(name)) ctx.variables.set(name, value);
@@ -294,6 +289,23 @@ export async function executeSchema(
     }
     if (execInputPortIds(source).length > 0) return null;
     return executeNodeById(nodeId, 'data');
+  };
+
+  // Снимок входов узла для трассировки теста (issue #406). Берём только уже
+  // посчитанные выходы узлов-источников из localOutputs — без вызова резолвера,
+  // чтобы не исполнять новые узлы и не маскировать исходную ошибку. К моменту
+  // записи трассировки (после исполнения узла) его data-источники уже посчитаны
+  // самим узлом через resolveNodeInputs, поэтому снимок отражает реальные входы.
+  const collectTraceInputs = (node: NodeDefinition): Record<string, unknown> => {
+    const inputs: Record<string, unknown> = {};
+    for (const edge of graph.edges) {
+      if (edge.to !== node.id || isExecPortId(edge.fromPort)) continue;
+      const sourceOutputs = localOutputs.get(edge.from);
+      if (sourceOutputs && Object.prototype.hasOwnProperty.call(sourceOutputs, edge.fromPort)) {
+        inputs[edge.toPort] = sourceOutputs[edge.fromPort];
+      }
+    }
+    return inputs;
   };
 
   async function executeNodeById(
@@ -329,6 +341,7 @@ export async function executeSchema(
         durationMs: Date.now() - startedAt,
         outputKeys: Object.keys(outputs),
         outputs,
+        inputs: ctx.nodeTrace ? collectTraceInputs(node) : {},
         schemaSlug: graph.slug,
         depth: ctx.traceDepth ?? 0,
         failed: false,
@@ -342,6 +355,7 @@ export async function executeSchema(
         durationMs: Date.now() - startedAt,
         outputKeys: [],
         outputs: { error: err instanceof Error ? err.message : String(err) },
+        inputs: ctx.nodeTrace ? collectTraceInputs(node) : {},
         schemaSlug: graph.slug,
         depth: ctx.traceDepth ?? 0,
         failed: true,
@@ -410,16 +424,10 @@ async function executeNode(
         return await executeLlmRequest(node, graph, ctx, resolveSourceOutputs);
       case 'knowledge_query':
         return await executeKnowledgeQuery(node, graph, ctx, resolveSourceOutputs);
-      case 'ontology_query':
-        return await executeOntologyQuery(node, graph, ctx, resolveSourceOutputs);
-      case 'ontology_anchor_match':
-        return await executeOntologyAnchorMatch(node, graph, resolveSourceOutputs);
-      case 'ontology_frontier_expand':
-        return await executeOntologyFrontierExpand(node, graph, resolveSourceOutputs);
-      case 'ontology_budget_select':
-        return await executeOntologyBudgetSelect(node, graph, resolveSourceOutputs);
-      case 'ontology_context_build':
-        return await executeOntologyContextBuild(node, graph, resolveSourceOutputs);
+      case 'graph_rag':
+        return await executeGraphRag(node, graph, ctx, resolveSourceOutputs);
+      case 'graph_query':
+        return await executeGraphQuery(node, graph, ctx, resolveSourceOutputs);
       case 'game_memory_read':
         return executeGameMemoryRead(ctx);
       case 'game_memory_write':
@@ -473,8 +481,7 @@ async function executeLlmRequest(
   const basePrompt = renderConfiguredTemplate(node.config.userPrompt ?? node.config.prompt, values);
   const retryPrompt = typeof node.config.retryPrompt === 'string' ? node.config.retryPrompt : '';
   const outputsConfig = parseLlmOutputs(node.config.outputs);
-  const kind = toLlmCallKind(node.config.kind, 'world_state_evaluation');
-  const provider = await resolveProvider(ctx, kind);
+  const provider = await resolveProvider(ctx);
   const modelParams = isRecord(node.config.modelParams) ? node.config.modelParams : undefined;
   const jsonMode = node.config.jsonMode !== false;
   // Число попыток можно переопределить на самом узле (issue #248): поле
@@ -505,7 +512,11 @@ async function executeLlmRequest(
           cacheKey: ctx.cacheKey,
         },
         ctx.llmLog,
-        { kind, modelParams: { ...modelParams, nodeId: node.id } },
+        {
+          schemaSlug: graph.slug,
+          nodeId: node.id,
+          modelParams: { ...modelParams, nodeId: node.id },
+        },
       );
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -575,249 +586,88 @@ async function executeKnowledgeQuery(
   };
 }
 
-/**
- * Узел концептуальной онтологии (issue #323/#375) — строгий graph retriever.
- *
- * Runtime-обёртка больше не собирает запрос из игрового контекста и не подставляет
- * gameId/mode/budgets по умолчанию. Она только валидирует явные входы/config,
- * загружает граф по graphScope или принимает готовый graph, передаёт данные в
- * config.bodyGraph и возвращает его результат.
- */
-async function executeOntologyQuery(
+async function executeGraphRag(
   node: NodeDefinition,
   graph: SchemaGraph,
   ctx: SchemaExecutionContext,
   resolveSourceOutputs: ResolveSourceOutputs,
 ): Promise<Record<string, unknown>> {
   const inputs = await resolveNodeInputs(node, graph, resolveSourceOutputs);
-  const bodyGraph = isSchemaGraph(node.config.bodyGraph) ? node.config.bodyGraph : null;
-  if (!bodyGraph) {
-    throw new SchemaNodeExecutionError(node.id, 'ontology_query-узлу нужен config.bodyGraph');
+  const query = asString(inputs.query) ?? asString(ctx.inputs.query) ?? asString(ctx.inputs.action) ?? '';
+  // options (issue #392): необязательный объект настроек узла, который пробрасывается
+  // в граничный выход options тела для редактируемых сценариев.
+  const options = isRecord(inputs.options) ? inputs.options : isRecord(ctx.inputs.options) ? ctx.inputs.options : undefined;
+  const maxIterations = Math.min(toPositiveInteger(node.config.maxIterations, 3), 5);
+  const body = isSchemaGraph(node.config.bodyGraph)
+    ? node.config.bodyGraph
+    : buildDefaultGraphRagBodyGraph(graph.slug, node.id);
+
+  // questions — внутренний механизм повторных итераций (issue #392): публичного входа
+  // у узла нет, поиск всегда стартует с пустого набора уточняющих вопросов.
+  let questions: string[] = [];
+  let answers = dedupeStringArray(toStringArray(ctx.inputs.answers));
+  let result = '';
+
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    // lastIteration (issue #392): на последней итерации тело принудительно прекращает
+    // поиск концептов и формирует финальный ответ (см. has_missing_questions в теле).
+    const lastIteration = iteration === maxIterations - 1;
+    const iterationCtx: SchemaExecutionContext = {
+      ...ctx,
+      inputs: { ...ctx.inputs, query, questions, answers, options, lastIteration },
+      variables: new Map(Object.entries(body.variables ?? {})),
+      nodeOutputs: new Map(),
+      traceDepth: (ctx.traceDepth ?? 0) + 1,
+      internalGraphQueryAllowed: true,
+    };
+
+    const outputs = await executeSchema(body, iterationCtx);
+    ctx.state = iterationCtx.state;
+
+    const nextAnswers = dedupeStringArray(toStringArray(outputs.answers));
+    if (nextAnswers.length > 0) answers = nextAnswers;
+
+    const nextResult = asString(outputs.result);
+    if (nextResult !== undefined) result = nextResult;
+
+    const nextQuestions = dedupeStringArray(toStringArray(outputs.questions));
+    // На последней итерации возвращаем result даже если критик ещё формулирует вопросы:
+    // тело уже прервало поиск через lastIteration и выдало финальный ответ.
+    if (lastIteration || nextQuestions.length === 0) return { result };
+    questions = nextQuestions;
   }
 
-  const mode = readOntologyMode(inputs.mode ?? node.config.mode, node.id);
-  const options = readTraversalOptions(inputs.options ?? node.config.options, node.id);
-  const query = (asString(inputs.query) ?? asString(node.config.query) ?? '').trim();
-  const explicit = toStringArray(inputs.anchors).length > 0
-    ? toStringArray(inputs.anchors)
-    : toStringArray(node.config.anchors);
-  if (query.length === 0 && explicit.length === 0) {
-    throw new SchemaNodeExecutionError(node.id, 'ontology_query-узлу нужен query или непустой anchors');
-  }
-
-  const graphScope = readGraphScope(inputs.graphScope ?? node.config.graphScope);
-  const graphInput = inputs.graph ?? node.config.graph;
-  const ontology = graphInput !== undefined
-    ? readOntologyGraph(graphInput, node.id)
-    : graphScope?.type === 'game'
-      ? await loadGameOntology(graphScope.gameId)
-      : null;
-  if (!ontology) {
-    throw new SchemaNodeExecutionError(node.id, 'ontology_query-узлу нужен graph или graphScope.type="game" с gameId');
-  }
-
-  const explicitCommunities = readCommunitySummaries(inputs.communities ?? node.config.communities);
-  const communities =
-    mode === 'local'
-      ? []
-      : explicitCommunities ?? (graphScope?.type === 'game' ? await loadGameCommunities(graphScope.gameId) : []);
-
-  const childCtx: SchemaExecutionContext = {
-    ...ctx,
-    inputs: {
-      graph: ontology,
-      graphScope,
-      query,
-      anchors: explicit,
-      traversalContext: readOntologyContext(inputs.traversalContext ?? node.config.traversalContext),
-      options,
-      mode,
-      communities,
-    },
-    variables: new Map(),
-    nodeOutputs: new Map(),
-    traceDepth: (ctx.traceDepth ?? 0) + 1,
-  };
-  const outputs = await executeSchema(bodyGraph, childCtx);
-
-  return {
-    expertise: requireNodeOutput(outputs, 'expertise', node.id),
-    graph_context: requireNodeOutput(outputs, 'graph_context', node.id),
-    subgraph: requireNodeOutput(outputs, 'subgraph', node.id),
-    trace: requireNodeOutput(outputs, 'trace', node.id),
-  };
-}
-
-async function executeOntologyAnchorMatch(
-  node: NodeDefinition,
-  graph: SchemaGraph,
-  resolveSourceOutputs: ResolveSourceOutputs,
-): Promise<Record<string, unknown>> {
-  const inputs = await resolveNodeInputs(node, graph, resolveSourceOutputs);
-  const ontology = readOntologyGraph(inputs.graph, node.id);
-  const query = (asString(inputs.query) ?? '').trim();
-  const explicit = toStringArray(inputs.anchors);
-  const anchorSlugs = matchAnchors(ontology, { text: query, explicit });
-  return {
-    anchorSlugs,
-    trace: {
-      anchor_match: {
-        query,
-        explicit,
-        anchorSlugs,
-      },
-    },
-  };
-}
-
-async function executeOntologyFrontierExpand(
-  node: NodeDefinition,
-  graph: SchemaGraph,
-  resolveSourceOutputs: ResolveSourceOutputs,
-): Promise<Record<string, unknown>> {
-  const inputs = await resolveNodeInputs(node, graph, resolveSourceOutputs);
-  const ontology = readOntologyGraph(inputs.graph, node.id);
-  const anchorSlugs = toStringArray(inputs.anchorSlugs);
-  const options = readTraversalOptions(inputs.options, node.id);
-  const traversalContext = readOntologyContext(inputs.traversalContext);
-  const subgraph = extractSubgraph(ontology, anchorSlugs, options, traversalContext);
-  return {
-    subgraph,
-    trace: {
-      frontier_expand: {
-        anchorSlugs,
-        options,
-        traversalContext,
-        conceptSlugs: subgraph.concepts.map((item) => item.concept.slug),
-        relationCount: subgraph.relations.length,
-      },
-    },
-  };
-}
-
-async function executeOntologyBudgetSelect(
-  node: NodeDefinition,
-  graph: SchemaGraph,
-  resolveSourceOutputs: ResolveSourceOutputs,
-): Promise<Record<string, unknown>> {
-  const inputs = await resolveNodeInputs(node, graph, resolveSourceOutputs);
-  const subgraph = readOntologySubgraph(inputs.subgraph, node.id);
-  const trace = mergeTrace(inputs.trace, {
-    budget_select: {
-      concepts: subgraph.concepts.length,
-      relations: subgraph.relations.length,
-    },
-  });
-  return { subgraph, trace };
-}
-
-async function executeOntologyContextBuild(
-  node: NodeDefinition,
-  graph: SchemaGraph,
-  resolveSourceOutputs: ResolveSourceOutputs,
-): Promise<Record<string, unknown>> {
-  const inputs = await resolveNodeInputs(node, graph, resolveSourceOutputs);
-  const subgraph = readOntologySubgraph(inputs.subgraph, node.id);
-  const mode = readOntologyMode(inputs.mode, node.id);
-  const communities = readCommunitySummaries(inputs.communities) ?? [];
-  const localBlock = buildOntologyBlock(subgraph);
-  const sceneSlugs = subgraph.concepts.map((item) => item.concept.slug);
-  const graphContext = buildGraphContext(mode, { localBlock, communities, sceneSlugs });
-  return {
-    expertise: localBlock,
-    graph_context: graphContext,
-    trace: mergeTrace(inputs.trace, {
-      context_build: {
-        mode,
-        sceneSlugs,
-        communityCount: communities.length,
-      },
-    }),
-  };
-}
-
-function readOntologyMode(value: unknown, nodeId: string) {
-  if (isOntologyQueryMode(value)) return value;
   throw new SchemaNodeExecutionError(
-    nodeId,
-    `ontology_query mode должен быть одним из: local, global, hybrid (получено: ${String(value)})`,
+    node.id,
+    `graph_rag-узел ${node.id} достиг maxIterations без result`,
   );
 }
 
-function readGraphScope(value: unknown): { type: 'game'; gameId: string } | null {
-  if (!isRecord(value)) return null;
-  if (value.type !== 'game') return null;
-  const gameId = typeof value.gameId === 'string' ? value.gameId.trim() : '';
-  return gameId ? { type: 'game', gameId } : null;
-}
-
-function readOntologyGraph(value: unknown, nodeId: string): OntologyGraph {
-  if (!isRecord(value) || !Array.isArray(value.concepts) || !Array.isArray(value.relations)) {
-    throw new SchemaNodeExecutionError(nodeId, 'ontology graph должен содержать arrays concepts и relations');
+async function executeGraphQuery(
+  node: NodeDefinition,
+  graph: SchemaGraph,
+  ctx: SchemaExecutionContext,
+  resolveSourceOutputs: ResolveSourceOutputs,
+): Promise<Record<string, unknown>> {
+  if (ctx.internalGraphQueryAllowed !== true) {
+    throw new SchemaNodeExecutionError(node.id, 'graph_query доступен только внутри graph_rag');
   }
-  return value as unknown as OntologyGraph;
-}
 
-function readOntologySubgraph(value: unknown, nodeId: string): OntologySubgraph {
-  if (!isRecord(value) || !Array.isArray(value.anchors) || !Array.isArray(value.concepts) || !Array.isArray(value.relations)) {
-    throw new SchemaNodeExecutionError(nodeId, 'ontology subgraph должен содержать anchors, concepts и relations');
-  }
-  return value as unknown as OntologySubgraph;
-}
+  const inputs = await resolveNodeInputs(node, graph, resolveSourceOutputs);
+  const keys = dedupeStringArray(toStringArray(inputs.keys));
+  if (keys.length === 0) return { concepts: [] };
 
-function readOntologyContext(value: unknown): OntologyContext {
-  if (!isRecord(value)) return {};
-  return {
-    season: asString(value.season),
-    location: asString(value.location),
-    timeOfDay: asString(value.timeOfDay),
+  const topK = toPositiveInteger(node.config.topK, 8);
+  const options: { gameId: string; embeddingProvider?: IEmbeddingProvider; topK?: number } = {
+    gameId: ctx.manifest.id,
+    topK,
   };
-}
+  if (ctx.embeddingProvider) options.embeddingProvider = ctx.embeddingProvider;
+  const concepts = ctx.graphQuery
+    ? await ctx.graphQuery(keys, options)
+    : await queryKnowledgeGraph({ ...options, keys });
 
-function readTraversalOptions(value: unknown, nodeId: string): Required<OntologyTraversalOptions> {
-  if (!isRecord(value)) {
-    throw new SchemaNodeExecutionError(nodeId, 'ontology_query options должны быть объектом');
-  }
-  const depth = readPositiveIntegerOption(value.depth, 'depth', nodeId);
-  const decay = readPositiveNumberOption(value.decay, 'decay', nodeId);
-  const maxConcepts = readPositiveIntegerOption(value.maxConcepts, 'maxConcepts', nodeId);
-  const maxRelations = readPositiveIntegerOption(value.maxRelations, 'maxRelations', nodeId);
-  return { depth, decay, maxConcepts, maxRelations };
-}
-
-function readPositiveIntegerOption(value: unknown, name: string, nodeId: string): number {
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value;
-  throw new SchemaNodeExecutionError(nodeId, `ontology_query options.${name} должен быть положительным целым числом`);
-}
-
-function readPositiveNumberOption(value: unknown, name: string, nodeId: string): number {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-  throw new SchemaNodeExecutionError(nodeId, `ontology_query options.${name} должен быть положительным числом`);
-}
-
-function readCommunitySummaries(value: unknown): CommunitySummary[] | null {
-  if (!Array.isArray(value)) return null;
-  return value.filter((item): item is CommunitySummary => {
-    return (
-      isRecord(item) &&
-      typeof item.title === 'string' &&
-      typeof item.summary === 'string' &&
-      Array.isArray(item.memberSlugs) &&
-      item.memberSlugs.every((slug) => typeof slug === 'string')
-    );
-  });
-}
-
-function mergeTrace(value: unknown, patch: Record<string, unknown>): Record<string, unknown> {
-  return { ...(isRecord(value) ? value : {}), ...patch };
-}
-
-function requireNodeOutput(outputs: Record<string, unknown>, key: string, nodeId: string): unknown {
-  if (Object.prototype.hasOwnProperty.call(outputs, key)) return outputs[key];
-  throw new SchemaNodeExecutionError(
-    nodeId,
-    `ontology_query bodyGraph должен вернуть output ${key}`,
-  );
+  return { concepts };
 }
 
 function executeGameMemoryRead(ctx: SchemaExecutionContext): Record<string, unknown> {
@@ -841,7 +691,7 @@ async function executeGameMemoryWrite(
   }
   const narrative = asString(inputs.narrative) ?? ctx.state.narrative;
   const action = asString(ctx.inputs.action) ?? '';
-  const provider = await resolveProvider(ctx, 'game_memory_extraction');
+  const provider = await resolveProvider(ctx);
   const promptTemplates: PromptTemplateOverrides = {
     game_memory_system: asString(node.config.systemPrompt) ?? '',
     game_memory_prompt: asString(node.config.userPrompt ?? node.config.prompt) ?? '',
@@ -859,6 +709,8 @@ async function executeGameMemoryWrite(
   ctx.llmLog.push(
     ...extraction.llmLog.map((entry) => ({
       ...entry,
+      schemaSlug: graph.slug,
+      nodeId: node.id,
       modelParams: { ...entry.modelParams, nodeId: node.id },
     })),
   );
@@ -1274,9 +1126,9 @@ function buildTemplateValues(
     state_summary: buildStateSummary(state),
     existing_memory: buildMemoryBlock(ctx.memoryCells ?? []),
     expertise: '',
-    // graph_context (issue #334): новый плейсхолдер выхода ontology_query. Дефолт
-    // '' — как у expertise/memory: незаполненный {{graph_context}} не остаётся в
-    // промпте дословно, пока узел нарратива не подключён к этому выходу.
+    // graph_context: зарезервированный плейсхолдер графового ретрива. Дефолт '' —
+    // как у expertise/memory: незаполненный {{graph_context}} не остаётся в промпте
+    // дословно, пока схема не подключит явный источник этого контекста.
     graph_context: '',
     memory: '',
   };
@@ -1392,17 +1244,10 @@ function evaluateTransformCode(
 
 async function resolveProvider(
   ctx: SchemaExecutionContext,
-  kind: LLMCallKind,
 ): Promise<ILLMProvider> {
   if (!ctx.router) return ctx.provider;
-  const route = await ctx.router.resolve(kind);
+  const route = await ctx.router.resolve();
   return route.provider;
-}
-
-function toLlmCallKind(value: unknown, fallback: LLMCallKind): LLMCallKind {
-  return typeof value === 'string' && LLM_CALL_KINDS.has(value as LLMCallKind)
-    ? (value as LLMCallKind)
-    : fallback;
 }
 
 function asPortType(value: unknown): PortType | undefined {
@@ -1536,6 +1381,18 @@ function asString(value: unknown): string | undefined {
 function toStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === 'string');
+}
+
+function dedupeStringArray(value: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
 }
 
 function toPositiveInteger(value: unknown, fallback: number): number {

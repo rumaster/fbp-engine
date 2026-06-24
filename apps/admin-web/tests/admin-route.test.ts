@@ -55,7 +55,7 @@ describe('admin hash-роутинг', () => {
   });
 
   it('parse и build обратимы для полного маршрута', () => {
-    const route = { view: 'llm', entityId: 'req-9', query: { userId: 'u-2', requestKind: 'hint_generation' } };
+    const route = { view: 'llm', entityId: 'req-9', query: { nodeId: 'narrative', schemaSlug: 'action', userId: 'u-2' } };
     expect(parseRouteHash(buildRouteHash(route), VIEWS, 'users')).toEqual(route);
   });
 });

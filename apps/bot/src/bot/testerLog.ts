@@ -1,4 +1,3 @@
-import type { LLMCallLogEntry } from '@tg-games/core/llm/trace.js';
 import type { LLMUsage } from '@tg-games/core/llm/ILLMProvider.js';
 import { calcCostMillicents, findModelPricing, usageToTokenUsage } from '@tg-games/core/llm/pricing.js';
 
@@ -46,29 +45,6 @@ export function formatMediaTesterReport(report: MediaTesterReport): string {
     'Затраты:',
     formatUsage(report.usage),
   ].join('\n');
-}
-
-/** Форматирует технический LLM-лог для tester mode. */
-export function formatTesterLlmLog(entries: LLMCallLogEntry[]): string {
-  if (entries.length === 0) {
-    return 'Нет обращений к LLM.';
-  }
-
-  return entries
-    .map((entry) =>
-      [
-        'Запрос:',
-        entry.request,
-        '',
-        'Ответ:',
-        entry.response,
-        '',
-        'Затраты:',
-        formatUsage(entry.usage),
-        '----',
-      ].join('\n'),
-    )
-    .join('\n');
 }
 
 function formatUsage(usage: LLMUsage | undefined): string {

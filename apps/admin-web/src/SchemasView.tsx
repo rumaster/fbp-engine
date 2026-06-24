@@ -18,6 +18,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useUpdateNodeInternals,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -57,8 +58,6 @@ import {
   CONSTANT_PORT_TYPES,
   SCHEMA_TABS,
   NODE_TYPE_LABELS,
-  ONTOLOGY_QUERY_MODES,
-  ONTOLOGY_QUERY_MODE_LABELS,
   isNodeType,
   PORT_TYPES,
   canConnectGraphPorts,
@@ -76,12 +75,16 @@ import {
   isExecPortId,
   buildTestInputs,
   buildSubSchemaTestInputs,
+  buildNodeBodyTestInputs,
   defaultTestInputValues,
   defaultSubSchemaTestInputValues,
+  defaultNodeBodyTestInputValues,
   subSchemaTestInputFields,
+  nodeBodyTestInputFields,
   parseSchemaBundle,
   loopModeFromConfig,
   collapseBodyGraphFrames,
+  reopenBodyGraphFrames,
   getBodyGraph,
   makeEmptyBodyGraph,
   writeBodyGraph,
@@ -196,7 +199,7 @@ type SchemaFlowEdge = Edge<{ schemaEdge: EdgeDefinition }>;
 
 interface SchemaTestLogEntry {
   nodeId?: string;
-  kind?: string;
+  schemaSlug?: string;
   requestText?: string;
   responseText?: string;
   errorText?: string;
@@ -212,6 +215,9 @@ interface SchemaTestNodeTraceEntry {
   durationMs: number;
   outputKeys: string[];
   outputs: Record<string, unknown>;
+  // Снимок входов узла (issue #406): для упавшего узла показываем входы, с которыми
+  // он исполнялся, чтобы по логу теста было видно причину сбоя.
+  inputs?: Record<string, unknown>;
   schemaSlug: string;
   depth: number;
   failed: boolean;
@@ -792,6 +798,11 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [refresh, setRefresh] = useState(0);
+  // Отдельный счётчик для перезагрузки только списка схем в сайдбаре (issue #393).
+  // После сохранения граф и позиция камеры обновляются на месте из ответа сервера,
+  // поэтому полную перезагрузку редактора (которая сбрасывает камеру и закрывает
+  // открытую схему узла) не запускаем — обновляем только список.
+  const [listRefresh, setListRefresh] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRows, setHistoryRows] = useState<ApiRecord[]>([]);
   const [historyPreview, setHistoryPreview] = useState<ApiRecord | null>(null);
@@ -846,7 +857,7 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
     apiFetch<{ items: ApiRecord[] }>(token, '/api/schemas')
       .then((data) => setSchemas(data.items))
       .catch(() => setSchemas([]));
-  }, [token, refresh]);
+  }, [token, refresh, listRefresh]);
 
   // Список игр для селектбокса (issue #234): берём имена из манифестов.
   useEffect(() => {
@@ -1459,13 +1470,13 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
     setDirty(true);
   }
 
-  // Спуск в bodyGraph узла (issue #337/#375): текущий граф запоминается как
-  // родитель кадра, на канвас выводится сохранённое или каноническое новое тело.
+  // Спуск в bodyGraph узла (issue #337/#386): текущий граф запоминается как родитель
+  // кадра, на канвас выводится сохранённое или новое тело.
   function openBodyGraph(nodeId: string): void {
     if (!graph) return;
     const node = graph.nodes.find((candidate) => candidate.id === nodeId);
-    if (!node || (node.type !== 'loop' && node.type !== 'ontology_query')) return;
-    const nodeType = node.type === 'ontology_query' ? 'ontology_query' : 'loop';
+    if (!node || (node.type !== 'loop' && node.type !== 'graph_rag')) return;
+    const nodeType = node.type === 'graph_rag' ? 'graph_rag' : 'loop';
     const body = getBodyGraph(graph, nodeId);
     setLoopStack((prev) => [...prev, { parentGraph: graph, loopNodeId: nodeId, nodeType }]);
     setGraph(body);
@@ -1476,7 +1487,14 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
     setNotice('');
   }
 
-  // Выход из тела цикла на уровень выше (issue #337): тело записывается в config.bodyGraph
+  // Двойной клик по узлу (issue #395): узлы с внутренней схемой (loop, graph_rag)
+  // открываются на канвасе так же, как кнопка «Открыть» в панели узла. Для остальных
+  // типов openBodyGraph ничего не делает — проверка типа внутри неё.
+  function handleNodeDoubleClick(_event: ReactMouseEvent, node: SchemaFlowNode): void {
+    openBodyGraph(node.id);
+  }
+
+  // Выход из bodyGraph на уровень выше (issue #337/#386): тело записывается в config.bodyGraph
   // родителя и редактор поднимается на предыдущий уровень. dirty выставляем только когда
   // тело действительно изменилось — простое открытие/закрытие не создаёт правок.
   function exitLoop(): void {
@@ -1487,10 +1505,8 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
     const stored = parentNode ? parentNode.config.bodyGraph : undefined;
     const baseline = stored ?? makeEmptyBodyGraph(frame.parentGraph, frame.loopNodeId, nodeType);
     const changed = JSON.stringify(baseline) !== JSON.stringify(graph);
-    // Для loop не плодим пустые bodyGraph. Для ontology_query каноническое тело
-    // обязательно по контракту, поэтому записываем его даже без ручных правок.
     const parent =
-      stored === undefined && !changed && nodeType === 'loop'
+      stored === undefined && !changed
         ? frame.parentGraph
         : writeBodyGraph(frame.parentGraph, frame.loopNodeId, graph);
     setLoopStack((prev) => prev.slice(0, -1));
@@ -1498,7 +1514,23 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
     setSelectedNodeIds([frame.loopNodeId]);
     setSelectedEdgeIds([]);
     setFailedNodeId(null);
-    if (changed || (stored === undefined && nodeType === 'ontology_query')) setDirty(true);
+    if (changed) setDirty(true);
+  }
+
+  // Применяет сохранённый сервером граф к редактору на месте (issue #393): если до
+  // сохранения была открыта схема узла (тело цикла/graph_rag), восстанавливаем тот же
+  // путь на свежем корневом графе и остаёмся в нём — без полной перезагрузки редактора,
+  // которая сбрасывала бы позицию камеры и закрывала открытую схему узла.
+  function applySavedGraph(savedRoot: SchemaGraph): void {
+    const root = { ...savedRoot, slug: activeSlug };
+    if (loopStack.length === 0) {
+      setLoopStack([]);
+      setGraph(root);
+      return;
+    }
+    const { frames, leaf } = reopenBodyGraphFrames(root, loopStack);
+    setLoopStack(frames);
+    setGraph(leaf);
   }
 
   // Сохраняет схему (issue #286, #310). Для существующей схемы: записываем черновик и
@@ -1520,8 +1552,7 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
             description,
           }),
         });
-        setLoopStack([]);
-        setGraph(normalizeSchemaGraph(created.graph_json));
+        applySavedGraph(normalizeSchemaGraph(created.graph_json));
         setDescription(field(created, 'description'));
         setDirty(false);
         setHasDraft(false);
@@ -1530,7 +1561,7 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
         setPendingSubSchema(null);
         setNotice('Схема создана.');
         setError('');
-        setRefresh((value) => value + 1);
+        setListRefresh((value) => value + 1);
         return;
       }
       // Сначала сохраняем текущий редактор как черновик, потом промоутим.
@@ -1546,15 +1577,14 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
       const promoted = await apiFetch<ApiRecord>(token, `/api/schemas/${activeSlug}/promote${gameQuery}`, {
         method: 'POST',
       });
-      setLoopStack([]);
-      setGraph(normalizeSchemaGraph(promoted.graph_json));
+      applySavedGraph(normalizeSchemaGraph(promoted.graph_json));
       setDescription(field(promoted, 'description'));
       setDirty(false);
       setHasDraft(false);
       setFailedNodeId(null);
       setNotice('Схема сохранена.');
       setError('');
-      setRefresh((value) => value + 1);
+      setListRefresh((value) => value + 1);
     } catch (err) {
       setNotice('');
       setError(err instanceof Error ? err.message : 'Не удалось сохранить схему');
@@ -1729,6 +1759,22 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
       setError(err instanceof Error ? err.message : 'Не удалось восстановить версию');
     }
   }
+
+  // Изолированный тест тела узла (issue #390): когда редактор находится внутри
+  // тела узла (loop/graph_rag), тест должен прогонять только это тело. Путь к узлу
+  // — id всех узлов по стеку входов, а форма входов строится по портам самого
+  // тестируемого (внутреннего) узла, а не по граничным портам его start-узла.
+  const bodyTestInfo = useMemo((): BodyTestInfo | null => {
+    if (loopStack.length === 0) return null;
+    const innermost = loopStack[loopStack.length - 1];
+    const node = innermost.parentGraph.nodes.find((candidate) => candidate.id === innermost.loopNodeId);
+    if (!node) return null;
+    return {
+      nodePath: loopStack.map((frame) => frame.loopNodeId),
+      node,
+      parentGraph: innermost.parentGraph,
+    };
+  }, [loopStack]);
 
   async function deleteHistoryEntry(historyId: string): Promise<void> {
     if (!window.confirm('Удалить эту версию из истории? Действие необратимо.')) return;
@@ -1949,6 +1995,7 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
                     onSelectionStart={handleSelectionStart}
                     onSelectionEnd={handleSelectionEnd}
                     onPaneClick={handlePaneClick}
+                    onNodeDoubleClick={handleNodeDoubleClick}
                     onNodeContextMenu={handleNodeContextMenu}
                     onEdgeContextMenu={handleEdgeContextMenu}
                     onPaneContextMenu={handlePaneContextMenu}
@@ -2148,6 +2195,7 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
           slug={activeSlug}
           schemaType={activePaletteKind}
           graph={graph}
+          bodyTest={bodyTestInfo}
           defaultGameId={requestGameId}
           games={games}
           onClose={() => setTestOpen(false)}
@@ -2176,6 +2224,26 @@ export function SchemasView({ token, entityId, gameId, onNavigate, focusNodeId }
 function BlueprintNode({ data, selected }: NodeProps<SchemaFlowNode>) {
   const node = data.graphNode;
   const ports = getNodePorts(node, data.graph);
+  // Сигнатура портов: id+тип каждого входа/выхода. При смене состава портов
+  // (добавление/переименование выхода variable_read, входа variable_write и т.п.)
+  // ReactFlow не перемеряет позиции хэндлов, если габариты узла не изменились —
+  // новый хэндл остаётся незарегистрированным, и из него нельзя начать ребро, а
+  // существующие рёбра к нему не отрисовываются (issue #394). Поэтому при изменении
+  // сигнатуры явно просим ReactFlow обновить внутренние данные узла.
+  const portSignature = [...ports.inputs, ...ports.outputs]
+    .map((port) => `${port.direction}:${port.id}:${port.type}`)
+    .join('|');
+  const updateNodeInternals = useUpdateNodeInternals();
+  // На первом рендере ReactFlow сам измеряет узел и хэндлы, поэтому принудительный
+  // вызов не нужен (и даже вреден: он временно сбрасывает измеренные габариты, что
+  // ломает рамочное выделение по нескольким узлам). Зовём updateNodeInternals только
+  // когда сигнатура портов реально изменилась относительно предыдущего рендера.
+  const prevPortSignatureRef = useRef(portSignature);
+  useEffect(() => {
+    if (prevPortSignatureRef.current === portSignature) return;
+    prevPortSignatureRef.current = portSignature;
+    updateNodeInternals(node.id);
+  }, [node.id, portSignature, updateNodeInternals]);
   const failed = data.failedNodeId === node.id;
   const removable = node.type !== 'start' && node.type !== 'end';
   // Визуальное оформление (issue #248, ТЗ §5): цвет шапки по категории узла,
@@ -2356,11 +2424,10 @@ function NodeConfigPanel({
   // Имена входящих портов данных (без exec-портов) — для панели вставки в раскрытом
   // редакторе текста (issue #285).
   const dataInputNames = ports.inputs.filter((port) => !isExecPortId(port.id)).map((port) => port.id);
-  const hasBodyGraph = node.type === 'loop' || node.type === 'ontology_query';
-  const bodyGraphTitle =
-    node.type === 'ontology_query'
-      ? 'Открыть суб-схему ontology_query на канвасе'
-      : 'Открыть тело цикла на канвасе';
+  const hasBodyGraph = node.type === 'loop' || node.type === 'graph_rag';
+  const bodyGraphTitle = node.type === 'graph_rag'
+    ? 'Открыть graph_rag bodyGraph на канвасе'
+    : 'Открыть тело цикла на канвасе';
 
   return (
     <div>
@@ -2567,8 +2634,19 @@ function NodeSpecificConfig({
   if (node.type === 'loop') {
     return <LoopConfig config={config} setConfigKey={setConfigKey} />;
   }
-  if (node.type === 'ontology_query') {
-    return <OntologyQueryConfig config={config} setConfigKey={setConfigKey} />;
+  if (node.type === 'graph_rag') {
+    return (
+      <label className="editor-label compact">
+        Max iterations
+        <input
+          type="number"
+          min="1"
+          max="5"
+          value={Number(config.maxIterations ?? 3)}
+          onChange={(event) => setConfigKey('maxIterations', Number(event.target.value))}
+        />
+      </label>
+    );
   }
   if (node.type === 'transform') {
     return (
@@ -2837,91 +2915,6 @@ function LoopConfig({
       </p>
       <p className="editor-hint">
         Тело цикла редактируется на канвасе: нажмите «Открыть» в шапке панели узла (issue #337).
-      </p>
-    </>
-  );
-}
-
-// Конфиг ontology_query (issue #375): режим и traversal budgets должны быть явными.
-// Их можно задать в config или подать через входные порты; runtime больше не делает
-// fallback из игрового контекста.
-function OntologyQueryConfig({
-  config,
-  setConfigKey,
-}: {
-  config: Record<string, unknown>;
-  setConfigKey: (key: string, value: unknown) => void;
-}) {
-  const mode = ONTOLOGY_QUERY_MODES.includes(config.mode as never)
-    ? (config.mode as string)
-    : '';
-  const options = isRecord(config.options) ? config.options : {};
-  const setOption = (key: string, value: number | undefined) => {
-    const next = { ...options };
-    if (value === undefined) {
-      delete next[key];
-    } else {
-      next[key] = value;
-    }
-    setConfigKey('options', Object.keys(next).length > 0 ? next : undefined);
-  };
-  const numberField = (key: string, label: string, hint: string, min = 1, max = 64) => {
-    const value = options[key];
-    return (
-      <label className="editor-label compact">
-        {label}
-        <input
-          type="number"
-          min={String(min)}
-          max={String(max)}
-          step={key === 'decay' ? '0.05' : '1'}
-          placeholder="через вход options"
-          value={typeof value === 'number' ? value : ''}
-          onChange={(event) => {
-            const raw = event.target.value;
-            if (raw === '') {
-              setOption(key, undefined);
-              return;
-            }
-            const next = Number(raw);
-            if (!Number.isFinite(next) || next <= 0) {
-              setOption(key, undefined);
-              return;
-            }
-            setOption(key, key === 'decay' ? next : Math.floor(next));
-          }}
-        />
-        <span className="editor-hint">{hint}</span>
-      </label>
-    );
-  };
-  return (
-    <>
-      <label className="editor-label compact">
-        Режим ретрива
-        <select
-          value={mode}
-          onChange={(event) => setConfigKey('mode', event.target.value || undefined)}
-        >
-          <option value="">Через вход mode</option>
-          {ONTOLOGY_QUERY_MODES.map((value) => (
-            <option key={value} value={value}>
-              {ONTOLOGY_QUERY_MODE_LABELS[value]}
-            </option>
-          ))}
-        </select>
-      </label>
-      <p className="editor-hint">
-        local — локальный подграф сцены; global — обзор сообществ графа; hybrid — оба
-        блока. Режим должен прийти из config.mode или входа mode.
-      </p>
-      {numberField('depth', 'Глубина обхода', 'Сколько шагов по связям от якорей.', 1, 8)}
-      {numberField('decay', 'Затухание веса', 'Множитель веса на шаг (0–1).', 0, 1)}
-      {numberField('maxConcepts', 'Лимит концептов', 'Максимум концептов в подграфе.', 1, 64)}
-      {numberField('maxRelations', 'Лимит связей', 'Максимум связей в подграфе.', 1, 64)}
-      <p className="editor-hint">
-        Текст и якоря подаются через входы query/anchors или config. Источник графа —
-        через graph/graphScope. Внутренняя суб-схема открывается кнопкой «Открыть».
       </p>
     </>
   );
@@ -3789,11 +3782,20 @@ function JsonEditor({
   );
 }
 
+// Сведения об изолированном тесте тела узла (issue #390): путь к узлу в дереве
+// тел и сам тестируемый узел с его родительским графом для разрешения портов.
+interface BodyTestInfo {
+  nodePath: string[];
+  node: NodeDefinition;
+  parentGraph: SchemaGraph;
+}
+
 function SchemaTestModal({
   token,
   slug,
   schemaType,
   graph,
+  bodyTest,
   defaultGameId,
   games,
   onClose,
@@ -3804,6 +3806,7 @@ function SchemaTestModal({
   slug: string;
   schemaType: SchemaPaletteKind;
   graph: SchemaGraph;
+  bodyTest: BodyTestInfo | null;
   defaultGameId: string | null;
   games: ApiRecord[];
   onClose: () => void;
@@ -3834,16 +3837,33 @@ function SchemaTestModal({
   // game/support — зафиксирован классом и игру выбирают только для game.
   const showContext = isSub;
   const showGamePicker = showContext && contextClass === 'game';
+  // Изолированный тест тела узла (issue #390): когда модалка открыта внутри тела
+  // узла, поля ввода строятся по входным data-портам самого тестируемого узла, а
+  // запрос дополняется nodePath, по которому сервер прогоняет только это тело.
+  const isBody = bodyTest !== null;
   const fields = useMemo(
-    () => (isSub ? subSchemaTestInputFields(graph) : testInputFields(schemaType)),
-    [isSub, graph, schemaType],
+    () =>
+      bodyTest
+        ? nodeBodyTestInputFields(bodyTest.node, bodyTest.parentGraph)
+        : isSub
+          ? subSchemaTestInputFields(graph)
+          : testInputFields(schemaType),
+    [bodyTest, isSub, graph, schemaType],
   );
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(() =>
-    isSub ? initialSubSchemaFieldValues(graph) : initialFieldValues(schemaType),
+    bodyTest
+      ? initialNodeBodyFieldValues(bodyTest.node, bodyTest.parentGraph)
+      : isSub
+        ? initialSubSchemaFieldValues(graph)
+        : initialFieldValues(schemaType),
   );
   const [advanced, setAdvanced] = useState(false);
   const [inputs, setInputs] = useState(() =>
-    isSub ? jsonPreview(defaultSubSchemaTestInputValues(graph)) : defaultTestInputs(schemaType),
+    bodyTest
+      ? jsonPreview(defaultNodeBodyTestInputValues(bodyTest.node, bodyTest.parentGraph))
+      : isSub
+        ? jsonPreview(defaultSubSchemaTestInputValues(graph))
+        : defaultTestInputs(schemaType),
   );
   const [result, setResult] = useState<SchemaTestResult | null>(null);
   const [lastRunInputs, setLastRunInputs] = useState<Record<string, unknown> | null>(null);
@@ -3875,9 +3895,11 @@ function SchemaTestModal({
     try {
       const parsedInputs = advanced
         ? (JSON.parse(inputs) as Record<string, unknown>)
-        : isSub
-          ? buildSubSchemaTestInputs(graph, fieldValues)
-          : buildTestInputs(schemaType, fieldValues);
+        : bodyTest
+          ? buildNodeBodyTestInputs(bodyTest.node, bodyTest.parentGraph, fieldValues)
+          : isSub
+            ? buildSubSchemaTestInputs(graph, fieldValues)
+            : buildTestInputs(schemaType, fieldValues);
       // Контекст выполнения суб-схемы (issue #351): для суб-схемы передаём домен
       // вызывающей стороны (support/game) и — при контексте «игра» — выбранную игру.
       // Для пайплайн-схем контекст не отправляется, а gameId берётся из активной
@@ -3896,16 +3918,19 @@ function SchemaTestModal({
         : requestGameId
           ? `Игра (${requestGameId})`
           : 'Без игры';
+      // Сохраняем входные параметры и контекст ДО запроса (issue #400): тогда они
+      // попадут в Markdown-отчёт не только при успехе, но и при ошибке теста.
+      setLastRunInputs(parsedInputs);
+      setLastRunContext(runContext);
       const data = await schemaRequest<SchemaTestResult>(token, `/api/schemas/${slug}/test`, {
         method: 'POST',
         body: JSON.stringify({
           inputs: parsedInputs,
           gameId: requestGameId,
           ...(isSub ? { context: contextClass } : {}),
+          ...(bodyTest ? { nodePath: bodyTest.nodePath } : {}),
         }),
       });
-      setLastRunInputs(parsedInputs);
-      setLastRunContext(runContext);
       setResult(data);
     } catch (err) {
       const failedNode = err instanceof SchemaRequestError ? extractFailedNodeId(err.data) : null;
@@ -3919,16 +3944,33 @@ function SchemaTestModal({
     }
   }
 
+  const schemaKindLabel = isSub
+    ? subSchemaClassLabel(subClass ?? 'common')
+    : paletteKindLabel(schemaType);
   const exportMarkdown = result
     ? buildSchemaTestMarkdown({
         slug,
         title: isSub ? 'Суб-схема' : 'Схема',
-        schemaKind: isSub ? subSchemaClassLabel(subClass ?? 'common') : paletteKindLabel(schemaType),
+        schemaKind: schemaKindLabel,
         context: lastRunContext ?? '—',
         inputs: lastRunInputs ?? {},
         result,
       })
-    : '';
+    : // Отчёт об ошибке теста (issue #400): когда запуск падает, результата нет,
+      // но оператору всё равно нужен Markdown с входными данными, текстом ошибки и
+      // логом узлов, чтобы приложить его к задаче на доработку.
+      error
+      ? buildSchemaTestErrorMarkdown({
+          slug,
+          title: isSub ? 'Суб-схема' : 'Схема',
+          schemaKind: schemaKindLabel,
+          context: lastRunContext ?? '—',
+          inputs: lastRunInputs ?? {},
+          error,
+          errorNode,
+          errorTrace,
+        })
+      : '';
 
   async function copyExportMarkdown(): Promise<void> {
     const ok = await copyTextToClipboard(exportMarkdown);
@@ -3937,7 +3979,14 @@ function SchemaTestModal({
 
   return (
     <>
-      <Modal title={`Тест схемы ${slug}`} onClose={onClose}>
+      <Modal
+        title={
+          bodyTest
+            ? `Тест тела узла ${bodyTest.node.label || bodyTest.node.id} (${bodyTest.nodePath.join(' / ')})`
+            : `Тест схемы ${slug}`
+        }
+        onClose={onClose}
+      >
         <form className="schema-test-form" onSubmit={runTest}>
           {showContext && (
             <div className="schema-test-context">
@@ -4013,6 +4062,11 @@ function SchemaTestModal({
                 )}
               </label>
             ))
+          ) : isBody ? (
+            <p className="editor-hint">
+              У тестируемого узла нет входных портов данных — тело прогоняется без начальных
+              значений, либо задайте их в расширенном режиме.
+            </p>
           ) : isSub ? (
             <p className="editor-hint">
               У start-узла суб-схемы нет входов — добавьте граничные порты в start-узел, чтобы
@@ -4044,6 +4098,16 @@ function SchemaTestModal({
             </button>
           </div>
         )}
+        {error && (
+          <div className="schema-test-result-actions">
+            <ToolbarButton icon={Download} onClick={() => {
+              setExportCopyStatus('idle');
+              setExportOpen(true);
+            }}>
+              Экспорт MD
+            </ToolbarButton>
+          </div>
+        )}
         {error && errorTrace.length > 0 && (
           <NodeTraceReport trace={errorTrace} onSelectNode={onSelectNode} />
         )}
@@ -4069,45 +4133,54 @@ function SchemaTestModal({
               <NodeTraceReport trace={result.nodeTrace} onSelectNode={onSelectNode} />
             )}
             <div className="subhead">LLM log · {result.llmLog.length}</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Узел</th>
-                  <th>Тип</th>
-                  <th>Модель</th>
-                  <th>Статус</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.llmLog.map((entry, index) => (
-                  <tr
-                    key={`${entry.nodeId ?? 'node'}-${index}`}
-                    onClick={() => entry.nodeId && onSelectNode(entry.nodeId)}
-                  >
-                    <td>{entry.nodeId ?? '—'}</td>
-                    <td>{entry.kind ?? '—'}</td>
-                    <td>—</td>
-                    <td>
+            {result.llmLog.length === 0 && <pre className="json-box">—</pre>}
+            <div className="llm-log-records">
+              {result.llmLog.map((entry, index) => {
+                const source = [entry.schemaSlug || '—', entry.nodeId || '—'].join(' · ');
+                return (
+                  <details key={`${entry.nodeId ?? 'rec'}-${index}`} className="llm-log-record">
+                    <summary>
+                      <span className="llm-log-source">{index + 1}. {source}</span>
                       <span className={entry.errorText ? 'badge badge-error' : 'badge'}>
                         {entry.errorText ? 'ошибка' : 'ок'}
                       </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {result.llmLog.map((entry, index) => (
-              <div key={`${entry.nodeId ?? 'detail'}-${index}`}>
-                <div className="subhead">{entry.nodeId ?? `Запись ${index + 1}`}</div>
-                <pre className={entry.errorText ? 'json-box error-box' : 'json-box'}>
-                  {entry.errorText || entry.responseText || entry.requestText || '—'}
-                </pre>
-              </div>
-            ))}
+                    </summary>
+                    {entry.nodeId && (
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() => onSelectNode(entry.nodeId as string)}
+                      >
+                        Перейти к узлу «{entry.nodeId}»
+                      </button>
+                    )}
+                    {entry.requestText && (
+                      <>
+                        <div className="subhead">Запрос</div>
+                        <pre className="json-box">{entry.requestText}</pre>
+                      </>
+                    )}
+                    {entry.errorText ? (
+                      <>
+                        <div className="subhead">Ошибка</div>
+                        <pre className="json-box error-box">{entry.errorText}</pre>
+                      </>
+                    ) : (
+                      entry.responseText && (
+                        <>
+                          <div className="subhead">Ответ</div>
+                          <pre className="json-box">{entry.responseText}</pre>
+                        </>
+                      )
+                    )}
+                  </details>
+                );
+              })}
+            </div>
           </>
         )}
       </Modal>
-      {exportOpen && result && (
+      {exportOpen && exportMarkdown && (
         <SchemaTestExportModal
           markdown={exportMarkdown}
           copyStatus={exportCopyStatus}
@@ -4201,6 +4274,67 @@ function buildSchemaTestMarkdown({ slug, title, schemaKind, context, inputs, res
   return lines.join('\n').trimEnd();
 }
 
+interface SchemaTestErrorMarkdownInput {
+  slug: string;
+  title: string;
+  schemaKind: string;
+  context: string;
+  inputs: Record<string, unknown>;
+  error: string;
+  errorNode: { id: string; type: string | null } | null;
+  errorTrace: SchemaTestNodeTraceEntry[];
+}
+
+// Markdown-отчёт об упавшем тесте (issue #400): зеркалит структуру успешного
+// отчёта, но вместо Outputs/Cost кладёт текст ошибки, упавший узел и лог тех узлов,
+// что успели отработать до сбоя. Готов к вставке в задачу на доработку.
+function buildSchemaTestErrorMarkdown({
+  slug,
+  title,
+  schemaKind,
+  context,
+  inputs,
+  error,
+  errorNode,
+  errorTrace,
+}: SchemaTestErrorMarkdownInput): string {
+  const lines = [
+    `# Ошибка теста: ${slug}`,
+    '',
+    '## Объект',
+    '',
+    `- ${title}: ${slug}`,
+    `- Тип: ${schemaKind}`,
+    '',
+    '## Контекст выполнения',
+    '',
+    context,
+    '',
+    '## Начальные параметры запуска теста',
+    '',
+    fencedJson(inputs),
+    '',
+    '## Ошибка',
+    '',
+    fencedText(error),
+    '',
+    '## Узел с ошибкой',
+    '',
+    errorNode
+      ? `${errorNode.id}${errorNode.type ? ` · ${nodeTypeLabel(errorNode.type)}` : ''}`
+      : 'Не определён.',
+    '',
+    `## Лог узлов (${errorTrace.length})`,
+    '',
+    formatNodeTraceMarkdown(errorTrace),
+    '',
+    `## Данные по узлам (${errorTrace.length})`,
+    '',
+    formatNodeDataMarkdown(errorTrace),
+  ];
+  return lines.join('\n').trimEnd();
+}
+
 function fencedJson(value: unknown): string {
   return ['```json', jsonPreview(value), '```'].join('\n');
 }
@@ -4228,8 +4362,12 @@ function formatNodeTraceMarkdown(trace: SchemaTestNodeTraceEntry[]): string {
 function formatNodeDataMarkdown(trace: SchemaTestNodeTraceEntry[]): string {
   if (trace.length === 0) return 'Нет данных.';
   return trace
-    .map((entry) =>
-      [
+    .map((entry) => {
+      const inputs = entry.inputs ?? {};
+      // В экспорт входы кладём для упавшего узла всегда (issue #406) и для
+      // остальных, если они непустые.
+      const showInputs = entry.failed || Object.keys(inputs).length > 0;
+      return [
         `### ${entry.order}. ${entry.nodeId} · ${nodeTypeLabel(entry.nodeType)}`,
         '',
         `- Схема: ${entry.schemaSlug}`,
@@ -4237,9 +4375,12 @@ function formatNodeDataMarkdown(trace: SchemaTestNodeTraceEntry[]): string {
         `- Duration: ${entry.durationMs} ms`,
         `- Статус: ${entry.failed ? 'ошибка' : 'ок'}`,
         '',
+        ...(showInputs ? [`#### Входы${entry.failed ? ' (узел упал)' : ''}`, '', fencedJson(inputs), ''] : []),
+        '#### Выходы',
+        '',
         fencedJson(entry.outputs),
-      ].join('\n'),
-    )
+      ].join('\n');
+    })
     .join('\n\n');
 }
 
@@ -4254,7 +4395,7 @@ function formatLlmLogMarkdown(log: SchemaTestLogEntry[]): string {
       return [
         `### ${entry.nodeId ?? `Запись ${index + 1}`}`,
         '',
-        `- Тип: ${entry.kind ?? '—'}`,
+        `- Схема: ${entry.schemaSlug ?? '—'}`,
         `- Статус: ${entry.errorText ? 'ошибка' : 'ок'}`,
         '',
         blocks.length > 0 ? blocks.join('\n\n') : '—',
@@ -4351,17 +4492,34 @@ function NodeTraceReport({
           ))}
         </tbody>
       </table>
-      {trace.map((entry) => (
-        <div key={`trace-detail-${entry.order}`}>
-          <div className="subhead">
-            {entry.order}. {entry.nodeId} · {nodeTypeLabel(entry.nodeType)}
-            {entry.via === 'data' ? ' · данные' : ''}
+      {trace.map((entry) => {
+        const inputs = entry.inputs ?? {};
+        // Входы показываем для упавшего узла всегда (issue #406) и для остальных,
+        // если по data-портам действительно что-то пришло, — иначе не шумим.
+        const showInputs = entry.failed || Object.keys(inputs).length > 0;
+        return (
+          <div key={`trace-detail-${entry.order}`}>
+            <div className="subhead">
+              {entry.order}. {entry.nodeId} · {nodeTypeLabel(entry.nodeType)}
+              {entry.via === 'data' ? ' · данные' : ''}
+            </div>
+            {showInputs && (
+              <>
+                <div className="schema-test-node-trace-label">
+                  Входы{entry.failed ? ' (узел упал)' : ''}
+                </div>
+                <pre className={entry.failed ? 'json-box error-box' : 'json-box'}>
+                  {jsonPreview(inputs)}
+                </pre>
+                <div className="schema-test-node-trace-label">Выходы</div>
+              </>
+            )}
+            <pre className={entry.failed ? 'json-box error-box' : 'json-box'}>
+              {jsonPreview(entry.outputs)}
+            </pre>
           </div>
-          <pre className={entry.failed ? 'json-box error-box' : 'json-box'}>
-            {jsonPreview(entry.outputs)}
-          </pre>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -4495,6 +4653,27 @@ function initialSubSchemaFieldValues(graph: SchemaGraph): Record<string, string>
   const defaults = defaultSubSchemaTestInputValues(graph);
   const result: Record<string, string> = {};
   for (const inputField of subSchemaTestInputFields(graph)) {
+    const value = defaults[inputField.key];
+    if (inputField.kind === 'json') {
+      result[inputField.key] = value !== undefined ? jsonPreview(value) : '';
+    } else if (typeof value === 'string') {
+      result[inputField.key] = value;
+    } else if (value === undefined || value === null) {
+      result[inputField.key] = '';
+    } else {
+      result[inputField.key] = String(value);
+    }
+  }
+  return result;
+}
+
+// Начальные значения полей изолированного теста тела узла (issue #390): по входным
+// data-портам тестируемого узла. JSON-поля сериализуем в текст, прочие — в простое
+// строковое представление дефолта по типу порта (как у суб-схем).
+function initialNodeBodyFieldValues(node: NodeDefinition, parentGraph: SchemaGraph): Record<string, string> {
+  const defaults = defaultNodeBodyTestInputValues(node, parentGraph);
+  const result: Record<string, string> = {};
+  for (const inputField of nodeBodyTestInputFields(node, parentGraph)) {
     const value = defaults[inputField.key];
     if (inputField.kind === 'json') {
       result[inputField.key] = value !== undefined ? jsonPreview(value) : '';

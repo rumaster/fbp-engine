@@ -18,11 +18,8 @@ const NODE_TYPES = Object.freeze([
   'end',
   'llm_request',
   'knowledge_query',
-  'ontology_query',
-  'ontology_anchor_match',
-  'ontology_frontier_expand',
-  'ontology_budget_select',
-  'ontology_context_build',
+  'graph_rag',
+  'graph_query',
   'game_memory_read',
   'game_memory_write',
   'manifest',
@@ -54,19 +51,6 @@ const PORT_TYPES = Object.freeze([
   'any',
 ]);
 
-// Режимы ретрива узла ontology_query (issue #334/#375, Graph RAG): `local` —
-// обход подграфа от якорей сцены; `global` — map-reduce по сводкам сообществ;
-// `hybrid` — оба источника в одном блоке. Начиная с issue #375 режим должен быть
-// задан явно через config.mode или вход mode; DEFAULT оставлен только для старых
-// UI/миграционных подсказок и не используется как runtime fallback.
-const ONTOLOGY_QUERY_MODES = Object.freeze(['local', 'global', 'hybrid']);
-const DEFAULT_ONTOLOGY_QUERY_MODE = 'local';
-const ONTOLOGY_QUERY_MODE_LABELS = Object.freeze({
-  local: 'Локальный (подграф)',
-  global: 'Глобальный (сводки сообществ)',
-  hybrid: 'Гибрид (подграф + сводки)',
-});
-
 const SCHEMA_TABS = Object.freeze([
   Object.freeze({ slug: 'action', schemaType: 'action', label: 'Действие' }),
   Object.freeze({ slug: 'hint', schemaType: 'hint', label: 'Подсказка' }),
@@ -79,11 +63,8 @@ const NODE_TYPE_LABELS = Object.freeze({
   end: 'End',
   llm_request: 'LLM request',
   knowledge_query: 'Knowledge query',
-  ontology_query: 'Ontology query',
-  ontology_anchor_match: 'Ontology anchor match',
-  ontology_frontier_expand: 'Ontology frontier expand',
-  ontology_budget_select: 'Ontology budget select',
-  ontology_context_build: 'Ontology context build',
+  graph_rag: 'Graph RAG',
+  graph_query: 'Graph query',
   game_memory_read: 'Memory read',
   game_memory_write: 'Memory write',
   manifest: 'Manifest',
@@ -106,11 +87,7 @@ const NODE_TYPE_LABELS = Object.freeze({
 const BASE_NODE_PALETTE = Object.freeze([
   'llm_request',
   'knowledge_query',
-  'ontology_query',
-  'ontology_anchor_match',
-  'ontology_frontier_expand',
-  'ontology_budget_select',
-  'ontology_context_build',
+  'graph_rag',
   'game_memory_read',
   'game_memory_write',
   'manifest',
@@ -255,6 +232,7 @@ const VALIDATION_ERROR_MESSAGES = Object.freeze({
     `Несовместимые порты в ребре ${edgeId}: ${fromNodeId}.${fromPortId} (${fromType}) -> ${toNodeId}.${toPortId} (${toType})`,
   duplicate_data_input: ({ nodeId, portId }) => `input-порт ${nodeId}.${portId} уже подключён`,
   invalid_loop_limits: ({ nodeId }) => `loop-узлу ${nodeId} нужен maxIterations от 1 до 100`,
+  invalid_graph_rag_limits: ({ nodeId }) => `graph_rag-узлу ${nodeId} нужен maxIterations от 1 до 5`,
   invalid_llm_ports_shape: ({ nodeId, key }) => `llm_request-узлу ${nodeId} нужен массив config.${key}`,
   invalid_llm_port_name: ({ nodeId, key }) => `llm_request-узел ${nodeId} содержит порт config.${key} без name`,
   invalid_llm_port_type: ({ nodeId, portType }) =>
@@ -284,20 +262,6 @@ const VALIDATION_ERROR_MESSAGES = Object.freeze({
     `Граничный порт узла ${nodeId} имеет недопустимый тип ${portType}`,
   duplicate_boundary_port: ({ nodeId, portId }) =>
     `Граничный порт ${nodeId}.${portId} объявлен повторно`,
-  invalid_ontology_mode: ({ nodeId, mode }) =>
-    `ontology_query-узлу ${nodeId} нужен config.mode из набора local|global|hybrid (получено: ${mode})`,
-  missing_ontology_mode: ({ nodeId }) =>
-    `ontology_query-узлу ${nodeId} нужен явный mode через вход mode или config.mode`,
-  missing_ontology_body_graph: ({ nodeId }) =>
-    `ontology_query-узлу ${nodeId} нужен config.bodyGraph`,
-  invalid_ontology_body_graph: ({ nodeId }) =>
-    `ontology_query-узел ${nodeId} содержит некорректный config.bodyGraph`,
-  missing_ontology_graph_source: ({ nodeId }) =>
-    `ontology_query-узлу ${nodeId} нужен вход graph или graphScope`,
-  missing_ontology_anchor_source: ({ nodeId }) =>
-    `ontology_query-узлу ${nodeId} нужен вход query или anchors`,
-  missing_ontology_options: ({ nodeId }) =>
-    `ontology_query-узлу ${nodeId} нужны traversal options через вход options или config.options`,
 });
 
 class SchemaContractError extends Error {
@@ -340,16 +304,6 @@ function isNodeType(value) {
 
 function isPortType(value) {
   return typeof value === 'string' && PORT_TYPES.includes(value);
-}
-
-function isOntologyQueryMode(value) {
-  return typeof value === 'string' && ONTOLOGY_QUERY_MODES.includes(value);
-}
-
-// Строго читает режим ontology_query: неизвестное или отсутствующее значение не
-// нормализуется в local, потому что issue #375 убирает runtime fallback.
-function ontologyQueryMode(value) {
-  return isOntologyQueryMode(value) ? value : null;
 }
 
 function isSubSchemaClass(value) {
@@ -539,6 +493,7 @@ function nodePolicyFor(kind) {
 function isNodeTypeAllowedInSchema(kind, nodeType) {
   if (nodeType === 'start' || nodeType === 'end') return true;
   if (!isNodeType(nodeType)) return false;
+  if (nodeType === 'graph_query') return false;
   const policy = nodePolicyFor(kind);
   if (!policy) return false;
   return !policy.blocked.includes(nodeType);
@@ -595,32 +550,8 @@ function getNodeOutputPortType(graph, node, portId) {
     return llmPortType(node.config && node.config.outputs, portId);
   }
   if (node.type === 'knowledge_query') return portId === 'expertise' ? 'expertise' : portId === 'documents' ? 'object_array' : 'any';
-  // ontology_query (issue #323/#334): expertise — сериализованный локальный подграф;
-  // graph_context — блок по режиму mode (локальный/глобальный/гибрид) для нового
-  // плейсхолдера {{graph_context}}; subgraph — структурный результат обхода для аудита.
-  if (node.type === 'ontology_query') {
-    if (portId === 'expertise' || portId === 'graph_context') return 'expertise';
-    if (portId === 'subgraph' || portId === 'trace') return 'object';
-    return 'any';
-  }
-  if (node.type === 'ontology_anchor_match') {
-    if (portId === 'anchorSlugs') return 'string_array';
-    if (portId === 'trace') return 'object';
-    return 'any';
-  }
-  if (node.type === 'ontology_frontier_expand') {
-    if (portId === 'subgraph' || portId === 'trace') return 'object';
-    return 'any';
-  }
-  if (node.type === 'ontology_budget_select') {
-    if (portId === 'subgraph' || portId === 'trace') return 'object';
-    return 'any';
-  }
-  if (node.type === 'ontology_context_build') {
-    if (portId === 'expertise' || portId === 'graph_context') return 'expertise';
-    if (portId === 'trace') return 'object';
-    return 'any';
-  }
+  if (node.type === 'graph_rag') return portId === 'result' ? 'string' : 'any';
+  if (node.type === 'graph_query') return portId === 'concepts' ? 'object_array' : 'any';
   if (node.type === 'game_memory_read') return portId === 'memory' ? 'memory' : 'any';
   if (node.type === 'game_memory_write') return portId === 'added' ? 'object_array' : portId === 'memoryUpdate' ? 'object' : 'any';
   if (node.type === 'manifest') return portId === 'manifest' ? 'object' : 'any';
@@ -655,39 +586,14 @@ function getNodeInputPortType(graph, node, portId) {
   }
   if (node.type === 'llm_request') return llmPortType(node.config && node.config.inputs, portId);
   if (node.type === 'knowledge_query' && (portId === 'keys' || portId === 'tags')) return 'string_array';
-  // ontology_query (issue #323): необязательные явные якоря (slug/имена концептов).
-  if (node.type === 'ontology_query' && portId === 'anchors') return 'string_array';
-  // ontology_query (issue #361): контекстно-независимый текстовый вход привязки.
-  if (node.type === 'ontology_query' && portId === 'query') return 'string';
-  // ontology_query (issue #375): строгий graph retriever получает источник графа,
-  // контекст условий, traversal budgets и mode явно через входы или config.
-  if (node.type === 'ontology_query' && portId === 'graphScope') return 'object';
-  if (node.type === 'ontology_query' && portId === 'graph') return 'object';
-  if (node.type === 'ontology_query' && portId === 'traversalContext') return 'object';
-  if (node.type === 'ontology_query' && portId === 'options') return 'object';
-  if (node.type === 'ontology_query' && portId === 'mode') return 'string';
-  if (node.type === 'ontology_anchor_match') {
-    if (portId === 'graph') return 'object';
+  if (node.type === 'graph_rag') {
     if (portId === 'query') return 'string';
-    if (portId === 'anchors') return 'string_array';
-  }
-  if (node.type === 'ontology_frontier_expand') {
-    if (portId === 'graph') return 'object';
-    if (portId === 'anchorSlugs') return 'string_array';
-    if (portId === 'traversalContext') return 'object';
+    // options (issue #392): необязательный объект настроек узла, который пробрасывается
+    // в граничный выход options тела. Вход questions у публичного узла убран — это
+    // внутренний механизм повторных итераций, недоступный извне.
     if (portId === 'options') return 'object';
   }
-  if (node.type === 'ontology_budget_select') {
-    if (portId === 'subgraph') return 'object';
-    if (portId === 'options') return 'object';
-    if (portId === 'trace') return 'object';
-  }
-  if (node.type === 'ontology_context_build') {
-    if (portId === 'subgraph') return 'object';
-    if (portId === 'communities') return 'object_array';
-    if (portId === 'mode') return 'string';
-    if (portId === 'trace') return 'object';
-  }
+  if (node.type === 'graph_query' && portId === 'keys') return 'string_array';
   if (node.type === 'game_memory_write') {
     if (portId === 'enabled') return 'boolean';
     if (portId === 'narrative') return 'string';
@@ -755,62 +661,17 @@ function addBaseDataPorts(node, graph, addInput, addOutput) {
     addOutput('documents', 'object_array', 'documents');
     return;
   }
-  // ontology_query (issue #323): альтернатива knowledge_query — вместо векторного
-  // поиска по абзацам обходит граф концептов от якорей. Выход expertise того же типа,
-  // что у knowledge_query, поэтому узел нарратива принимает результат без изменений.
-  if (node.type === 'ontology_query') {
-    // query/anchors (issue #361/#375): контекстно-независимые источники привязки.
-    // Хотя бы один из них должен быть подключён явно; runtime больше не выводит
-    // текст из игрового ctx.inputs/ctx.state.
+  if (node.type === 'graph_rag') {
     addInput('query', 'string', 'query');
-    addInput('anchors', 'string_array', 'anchors');
-    addInput('graphScope', 'object', 'graphScope');
-    addInput('graph', 'object', 'graph');
-    addInput('traversalContext', 'object', 'traversalContext');
+    // options (issue #392): объект настроек узла. У публичного узла нет входа
+    // questions — повторные итерации размышления управляются внутри тела.
     addInput('options', 'object', 'options');
-    addInput('mode', 'string', 'mode');
-    addOutput('expertise', 'expertise', 'expertise');
-    // graph_context (issue #334): блок по режиму config.mode — локальный подграф,
-    // глобальные сводки сообществ или их гибрид. Тип expertise, как у expertise/
-    // knowledge_query, поэтому подключается к узлу нарратива без изменений.
-    addOutput('graph_context', 'expertise', 'graph_context');
-    addOutput('subgraph', 'object', 'subgraph');
-    addOutput('trace', 'object', 'trace');
+    addOutput('result', 'string', 'result');
     return;
   }
-  if (node.type === 'ontology_anchor_match') {
-    addInput('graph', 'object', 'graph');
-    addInput('query', 'string', 'query');
-    addInput('anchors', 'string_array', 'anchors');
-    addOutput('anchorSlugs', 'string_array', 'anchorSlugs');
-    addOutput('trace', 'object', 'trace');
-    return;
-  }
-  if (node.type === 'ontology_frontier_expand') {
-    addInput('graph', 'object', 'graph');
-    addInput('anchorSlugs', 'string_array', 'anchorSlugs');
-    addInput('traversalContext', 'object', 'traversalContext');
-    addInput('options', 'object', 'options');
-    addOutput('subgraph', 'object', 'subgraph');
-    addOutput('trace', 'object', 'trace');
-    return;
-  }
-  if (node.type === 'ontology_budget_select') {
-    addInput('subgraph', 'object', 'subgraph');
-    addInput('options', 'object', 'options');
-    addInput('trace', 'object', 'trace');
-    addOutput('subgraph', 'object', 'subgraph');
-    addOutput('trace', 'object', 'trace');
-    return;
-  }
-  if (node.type === 'ontology_context_build') {
-    addInput('subgraph', 'object', 'subgraph');
-    addInput('communities', 'object_array', 'communities');
-    addInput('mode', 'string', 'mode');
-    addInput('trace', 'object', 'trace');
-    addOutput('expertise', 'expertise', 'expertise');
-    addOutput('graph_context', 'expertise', 'graph_context');
-    addOutput('trace', 'object', 'trace');
+  if (node.type === 'graph_query') {
+    addInput('keys', 'string_array', 'keys');
+    addOutput('concepts', 'object_array', 'concepts');
     return;
   }
   if (node.type === 'game_memory_read') {
@@ -981,7 +842,382 @@ function variablePortRows(node, key) {
   return [{ name: 'value', type: 'any' }];
 }
 
-function validateSchemaGraphContract(graph) {
+function bodyEdge(from, fromPort, to, toPort) {
+  return { id: `${from}:${fromPort}->${to}:${toPort}`, from, fromPort, to, toPort };
+}
+
+function graphRagLlmOutputs(outputs) {
+  return outputs.map((item) => ({
+    name: item.name,
+    jsonPath: item.jsonPath || item.name,
+    type: item.type,
+  }));
+}
+
+function buildDefaultGraphRagBodyGraph(parentSlug = 'graph_rag', nodeId = 'graph_rag') {
+  // Тело по умолчанию для graph_rag (issue #388). Топология построена на data-pull-узлах
+  // (transform / condition), без промежуточных variable_write/read: значения тянутся
+  // напрямую по рёбрам, что делает граф короче и читаемее. Логика одной итерации:
+  //   1. Определяем источник ключей: уточняющие вопросы прошлой итерации или ключи,
+  //      выделенные LLM из исходного запроса (select_keys).
+  //   2. Ищем вершины-якоря в графе знаний и оставляем релевантные (select_anchors).
+  //   3. Раскрываем соседей якорей и снова фильтруем (select_neighbors).
+  //   4. Критик решает, хватает ли фактов: пустой список вопросов → формируем финальный
+  //      ответ и выходим; непустой → готовим вход для следующей итерации и выходим в end,
+  //      откуда graph_rag-движок запустит новую итерацию (см. executeGraphRag).
+  // Важно: critic.answers берётся из start.answers (ответы прошлых итераций), а не из
+  // summarize_iteration — иначе образуется data-цикл critic↔summarize_iteration.
+  return {
+    version: 1,
+    subSchemaClass: 'common',
+    slug: `${parentSlug}::graph_rag:${nodeId}`,
+    nodes: [
+      {
+        id: 'start',
+        type: 'start',
+        position: { x: 0, y: 180 },
+        label: 'Старт',
+        config: {
+          outputs: [
+            port('query', 'string', 'Запрос'),
+            port('questions', 'string_array', 'Уточняющие вопросы'),
+            port('answers', 'string_array', 'Ответы прошлых итераций'),
+            // options (issue #392): настройки узла из публичного входа options.
+            port('options', 'object', 'Опции узла'),
+            // lastIteration (issue #392): движок выставляет true на последней
+            // итерации — телу пора прекратить поиск и сформировать финальный ответ.
+            port('lastIteration', 'boolean', 'Последняя итерация'),
+          ],
+        },
+      },
+      {
+        id: 'has_questions',
+        type: 'transform',
+        position: { x: 240, y: 300 },
+        label: 'Есть вопросы от прошлой итерации?',
+        config: {
+          code: [
+            'const items = Array.isArray(input.questions) ? input.questions : [];',
+            'return { hasQuestions: items.some((item) => typeof item === "string" && item.trim().length > 0) };',
+          ].join('\n'),
+          inputs: [{ name: 'questions', type: 'string_array' }],
+          outputs: [{ name: 'hasQuestions', type: 'boolean', path: 'result.hasQuestions' }],
+        },
+      },
+      {
+        id: 'question_branch',
+        type: 'condition',
+        position: { x: 480, y: 180 },
+        label: 'Есть вопросы?',
+        config: { input: 'value', operator: 'truthy', right: '' },
+      },
+      {
+        id: 'extract_keys',
+        type: 'llm_request',
+        position: { x: 720, y: 60 },
+        label: 'Выделить ключи из запроса',
+        config: {
+          systemPrompt: 'Выдели короткие ключи для поиска в графе знаний игры. Верни только JSON.',
+          userPrompt: 'Вопрос: {{query}}\nВерни {"keys":["ключ"]}.',
+          retryPrompt: 'Верни валидный JSON вида {"keys":["ключ"]}.',
+          inputs: [{ name: 'query', type: 'string' }],
+          outputs: graphRagLlmOutputs([{ name: 'keys', type: 'string_array' }]),
+          jsonMode: true,
+        },
+      },
+      {
+        id: 'select_keys',
+        type: 'transform',
+        position: { x: 720, y: 300 },
+        label: 'Выбрать источник ключей',
+        config: {
+          // useQuestions=true → ключи берём из уточняющих вопросов прошлой итерации;
+          // иначе используем ключи, выделенные LLM из исходного запроса.
+          code: [
+            'const source = input.useQuestions ? input.questionKeys : input.llmKeys;',
+            'return Array.isArray(source) ? source.filter((item) => typeof item === "string" && item.trim().length > 0) : [];',
+          ].join('\n'),
+          inputs: [
+            { name: 'llmKeys', type: 'string_array' },
+            { name: 'questionKeys', type: 'string_array' },
+            { name: 'useQuestions', type: 'boolean' },
+          ],
+          outputs: [{ name: 'keys', type: 'string_array', path: 'result' }],
+        },
+      },
+      {
+        id: 'graph_query_anchors',
+        type: 'graph_query',
+        position: { x: 1000, y: 180 },
+        label: 'Граф: вершины-якоря',
+        config: { topK: 8 },
+      },
+      {
+        id: 'select_anchors',
+        type: 'llm_request',
+        position: { x: 1280, y: 180 },
+        label: 'Отобрать якоря',
+        config: {
+          systemPrompt: 'Выбери релевантные вершины графа для вопроса. Верни только JSON.',
+          userPrompt: [
+            'Вопрос: {{query}}',
+            'Кандидаты: {{anchorConcepts}}',
+            'Верни {"keep":["id"],"load":["id"]}. keep — полезные вершины, load — какие id раскрыть глубже.',
+          ].join('\n'),
+          retryPrompt: 'Верни валидный JSON вида {"keep":["id"],"load":["id"]}.',
+          inputs: [
+            { name: 'query', type: 'string' },
+            { name: 'anchorConcepts', type: 'object_array' },
+          ],
+          outputs: graphRagLlmOutputs([
+            { name: 'keep', type: 'string_array' },
+            { name: 'load', type: 'string_array' },
+          ]),
+          jsonMode: true,
+        },
+      },
+      {
+        id: 'graph_query_neighbors',
+        type: 'graph_query',
+        position: { x: 1560, y: 180 },
+        label: 'Граф: соседние вершины',
+        config: { topK: 8 },
+      },
+      {
+        id: 'select_neighbors',
+        type: 'llm_request',
+        position: { x: 1840, y: 180 },
+        label: 'Отобрать соседей',
+        config: {
+          systemPrompt: 'Выбери итоговые вершины графа, достаточные для ответа. Верни только JSON.',
+          userPrompt: [
+            'Вопрос: {{query}}',
+            'Якоря: {{anchorConcepts}}',
+            'Раскрытые соседи: {{neighborConcepts}}',
+            'Верни {"keep":["id"],"load":["id"]}.',
+          ].join('\n'),
+          retryPrompt: 'Верни валидный JSON вида {"keep":["id"],"load":["id"]}.',
+          inputs: [
+            { name: 'query', type: 'string' },
+            { name: 'anchorConcepts', type: 'object_array' },
+            { name: 'neighborConcepts', type: 'object_array' },
+          ],
+          outputs: graphRagLlmOutputs([
+            { name: 'keep', type: 'string_array' },
+            { name: 'load', type: 'string_array' },
+          ]),
+          jsonMode: true,
+        },
+      },
+      {
+        id: 'merge_concepts',
+        type: 'transform',
+        position: { x: 2080, y: 320 },
+        label: 'Объединить концепты',
+        config: {
+          code: [
+            'const anchors = Array.isArray(input.anchorConcepts) ? input.anchorConcepts : [];',
+            'const neighbors = Array.isArray(input.neighborConcepts) ? input.neighborConcepts : [];',
+            'const keep = [];',
+            'for (const item of Array.isArray(input.anchorKeep) ? input.anchorKeep : []) if (typeof item === "string") keep.push(item);',
+            'for (const item of Array.isArray(input.neighborKeep) ? input.neighborKeep : []) if (typeof item === "string") keep.push(item);',
+            'const filterActive = keep.length > 0;',
+            'const byId = {};',
+            'const add = (item) => {',
+            '  if (!item || typeof item !== "object") return;',
+            '  const id = typeof item.id === "string" ? item.id : "";',
+            '  if (!id) return;',
+            '  if (filterActive && !keep.includes(id)) return;',
+            '  byId[id] = item;',
+            '};',
+            'for (const item of anchors) add(item);',
+            'for (const item of neighbors) add(item);',
+            'return Object.keys(byId).map((id) => byId[id]);',
+          ].join('\n'),
+          inputs: [
+            { name: 'anchorConcepts', type: 'object_array' },
+            { name: 'neighborConcepts', type: 'object_array' },
+            { name: 'anchorKeep', type: 'string_array' },
+            { name: 'neighborKeep', type: 'string_array' },
+          ],
+          outputs: [{ name: 'concepts', type: 'object_array', path: 'result' }],
+        },
+      },
+      {
+        id: 'critic',
+        type: 'llm_request',
+        position: { x: 2320, y: 180 },
+        label: 'Критик: достаточно ли фактов',
+        config: {
+          systemPrompt: 'Проверь, хватает ли найденных графовых фактов для ответа. Верни только JSON.',
+          userPrompt: [
+            'Вопрос: {{query}}',
+            'Найденные концепты: {{concepts}}',
+            'Ответы прошлых итераций: {{answers}}',
+            'Если нужны ещё факты, верни {"questions":["что найти"]}. Если хватает, верни {"questions":[]}.',
+          ].join('\n'),
+          retryPrompt: 'Верни валидный JSON вида {"questions":["что найти"]}.',
+          inputs: [
+            { name: 'query', type: 'string' },
+            { name: 'concepts', type: 'object_array' },
+            { name: 'answers', type: 'string_array' },
+          ],
+          outputs: graphRagLlmOutputs([{ name: 'questions', type: 'string_array' }]),
+          jsonMode: true,
+        },
+      },
+      {
+        id: 'has_missing_questions',
+        type: 'transform',
+        position: { x: 2560, y: 320 },
+        label: 'Нужны ещё факты?',
+        config: {
+          // lastIteration (issue #392): на последней итерации поиск прерывается
+          // принудительно — вопросы критика игнорируются, и ветка уходит на
+          // финальный ответ, иначе тело завершилось бы без result.
+          code: [
+            'const items = Array.isArray(input.questions) ? input.questions : [];',
+            'const hasNew = items.some((item) => typeof item === "string" && item.trim().length > 0);',
+            'return { hasQuestions: input.lastIteration ? false : hasNew };',
+          ].join('\n'),
+          inputs: [
+            { name: 'questions', type: 'string_array' },
+            { name: 'lastIteration', type: 'boolean' },
+          ],
+          outputs: [{ name: 'hasQuestions', type: 'boolean', path: 'result.hasQuestions' }],
+        },
+      },
+      {
+        id: 'critique_branch',
+        type: 'condition',
+        position: { x: 2800, y: 180 },
+        label: 'Нужна ещё итерация?',
+        config: { input: 'value', operator: 'truthy', right: '' },
+      },
+      {
+        id: 'summarize_iteration',
+        type: 'transform',
+        position: { x: 3040, y: 320 },
+        label: 'Подготовить следующую итерацию',
+        config: {
+          code: [
+            'const answers = Array.isArray(input.answers) ? input.answers.filter((item) => typeof item === "string") : [];',
+            'const concepts = Array.isArray(input.concepts) ? input.concepts : [];',
+            'const labels = concepts.map((item) => item && typeof item === "object" && typeof item.concept === "string" ? item.concept : "").filter((item) => item.length > 0);',
+            'const nextAnswers = labels.length > 0 ? answers.concat([labels.join(", ")]) : answers;',
+            'const questions = Array.isArray(input.questions) ? input.questions.filter((item) => typeof item === "string" && item.trim().length > 0) : [];',
+            'return { answers: nextAnswers, questions };',
+          ].join('\n'),
+          inputs: [
+            { name: 'answers', type: 'string_array' },
+            { name: 'concepts', type: 'object_array' },
+            { name: 'questions', type: 'string_array' },
+          ],
+          outputs: [
+            { name: 'answers', type: 'string_array', path: 'result.answers' },
+            { name: 'questions', type: 'string_array', path: 'result.questions' },
+          ],
+        },
+      },
+      {
+        id: 'final_answer',
+        type: 'llm_request',
+        position: { x: 3040, y: 60 },
+        label: 'Финальный ответ',
+        config: {
+          systemPrompt: 'Ответь на исходный вопрос только по найденным концептам графа. Верни только JSON.',
+          userPrompt: [
+            'Вопрос: {{query}}',
+            'Найденные концепты: {{concepts}}',
+            'Ответы прошлых итераций: {{answers}}',
+            'Верни {"result":"ответ"}.',
+          ].join('\n'),
+          retryPrompt: 'Верни валидный JSON вида {"result":"ответ"}.',
+          inputs: [
+            { name: 'query', type: 'string' },
+            { name: 'concepts', type: 'object_array' },
+            { name: 'answers', type: 'string_array' },
+          ],
+          outputs: graphRagLlmOutputs([{ name: 'result', type: 'string' }]),
+          jsonMode: true,
+        },
+      },
+      {
+        id: 'end',
+        type: 'end',
+        position: { x: 3340, y: 180 },
+        label: 'Конец',
+        config: {
+          inputs: [
+            port('result', 'string', 'Ответ'),
+            port('answers', 'string_array', 'Ответы для следующей итерации'),
+            port('questions', 'string_array', 'Вопросы для следующей итерации'),
+          ],
+        },
+      },
+    ],
+    edges: [
+      // Поток управления: ветка по наличию уточняющих вопросов прошлой итерации.
+      bodyEdge('start', 'exec', 'question_branch', 'exec'),
+      bodyEdge('start', 'questions', 'has_questions', 'questions'),
+      bodyEdge('has_questions', 'hasQuestions', 'question_branch', 'value'),
+      // Нет вопросов → выделяем ключи запроса через LLM; есть → сразу к поиску в графе.
+      bodyEdge('question_branch', 'false', 'extract_keys', 'exec'),
+      bodyEdge('start', 'query', 'extract_keys', 'query'),
+      bodyEdge('extract_keys', 'exec', 'graph_query_anchors', 'exec'),
+      bodyEdge('question_branch', 'true', 'graph_query_anchors', 'exec'),
+      // Источник ключей выбирается data-узлом без побочных эффектов.
+      bodyEdge('extract_keys', 'keys', 'select_keys', 'llmKeys'),
+      bodyEdge('start', 'questions', 'select_keys', 'questionKeys'),
+      bodyEdge('has_questions', 'hasQuestions', 'select_keys', 'useQuestions'),
+      bodyEdge('select_keys', 'keys', 'graph_query_anchors', 'keys'),
+      // Якоря: запрос к графу и LLM-фильтр.
+      bodyEdge('graph_query_anchors', 'exec', 'select_anchors', 'exec'),
+      bodyEdge('start', 'query', 'select_anchors', 'query'),
+      bodyEdge('graph_query_anchors', 'concepts', 'select_anchors', 'anchorConcepts'),
+      // Соседи: раскрываем выбранные load-вершины и снова фильтруем.
+      bodyEdge('select_anchors', 'exec', 'graph_query_neighbors', 'exec'),
+      bodyEdge('select_anchors', 'load', 'graph_query_neighbors', 'keys'),
+      bodyEdge('graph_query_neighbors', 'exec', 'select_neighbors', 'exec'),
+      bodyEdge('start', 'query', 'select_neighbors', 'query'),
+      bodyEdge('graph_query_anchors', 'concepts', 'select_neighbors', 'anchorConcepts'),
+      bodyEdge('graph_query_neighbors', 'concepts', 'select_neighbors', 'neighborConcepts'),
+      // Итоговый набор концептов: оставляем вершины из keep якорей и соседей.
+      bodyEdge('graph_query_anchors', 'concepts', 'merge_concepts', 'anchorConcepts'),
+      bodyEdge('graph_query_neighbors', 'concepts', 'merge_concepts', 'neighborConcepts'),
+      bodyEdge('select_anchors', 'keep', 'merge_concepts', 'anchorKeep'),
+      bodyEdge('select_neighbors', 'keep', 'merge_concepts', 'neighborKeep'),
+      // Критик оценивает достаточность фактов.
+      bodyEdge('select_neighbors', 'exec', 'critic', 'exec'),
+      bodyEdge('start', 'query', 'critic', 'query'),
+      bodyEdge('merge_concepts', 'concepts', 'critic', 'concepts'),
+      bodyEdge('start', 'answers', 'critic', 'answers'),
+      bodyEdge('critic', 'exec', 'critique_branch', 'exec'),
+      bodyEdge('critic', 'questions', 'has_missing_questions', 'questions'),
+      // Принудительное прерывание поиска на последней итерации (issue #392).
+      bodyEdge('start', 'lastIteration', 'has_missing_questions', 'lastIteration'),
+      bodyEdge('has_missing_questions', 'hasQuestions', 'critique_branch', 'value'),
+      // Нужна ещё итерация → подготовка входа и выход; иначе → финальный ответ.
+      bodyEdge('critique_branch', 'true', 'end', 'exec'),
+      bodyEdge('critique_branch', 'false', 'final_answer', 'exec'),
+      bodyEdge('final_answer', 'exec', 'end', 'exec'),
+      bodyEdge('start', 'query', 'final_answer', 'query'),
+      bodyEdge('merge_concepts', 'concepts', 'final_answer', 'concepts'),
+      bodyEdge('start', 'answers', 'final_answer', 'answers'),
+      // Подготовка следующей итерации (питает граничные выходы end).
+      bodyEdge('start', 'answers', 'summarize_iteration', 'answers'),
+      bodyEdge('merge_concepts', 'concepts', 'summarize_iteration', 'concepts'),
+      bodyEdge('critic', 'questions', 'summarize_iteration', 'questions'),
+      // Граничные выходы тела: result — финальный ответ, answers/questions — для следующей итерации.
+      bodyEdge('final_answer', 'result', 'end', 'result'),
+      bodyEdge('summarize_iteration', 'answers', 'end', 'answers'),
+      bodyEdge('summarize_iteration', 'questions', 'end', 'questions'),
+    ],
+    variables: {},
+  };
+}
+
+function validateSchemaGraphContract(graph, options = {}) {
   // Граф — либо пайплайн-схема (schemaType), либо суб-схема (subSchemaClass), но не оба
   // сразу (issue #310). Палитра узлов выбирается по «виду» через graphPaletteKind.
   const isSub = isSubSchemaGraph(graph);
@@ -997,7 +1233,8 @@ function validateSchemaGraphContract(graph) {
   for (const node of graph.nodes) {
     if (ids.has(node.id)) throw contractError('duplicate_node_id', { nodeId: node.id });
     ids.add(node.id);
-    if (!isNodeTypeAllowedInSchema(paletteKind, node.type)) {
+    const internalGraphQueryAllowed = options.allowInternalGraphQuery === true && node.type === 'graph_query';
+    if (!internalGraphQueryAllowed && !isNodeTypeAllowedInSchema(paletteKind, node.type)) {
       throw contractError('node_type_blocked', { schemaType: paletteKind, nodeType: node.type });
     }
     // Граничные порты суб-схемы (issue #310): для start — config.outputs, для end —
@@ -1005,7 +1242,7 @@ function validateSchemaGraphContract(graph) {
     // молча отбрасывает плохие записи, здесь же это ошибка контракта).
     if (isSub && node.type === 'start') validateBoundaryPorts(node, 'outputs');
     if (isSub && node.type === 'end') validateBoundaryPorts(node, 'inputs');
-    validateNodeConfig(node);
+    validateNodeConfig(node, options);
   }
 
   const starts = graph.nodes.filter((node) => node.type === 'start');
@@ -1029,55 +1266,21 @@ function validateSchemaGraphContract(graph) {
       occupiedDataInputs.add(key);
     }
   }
-  for (const node of graph.nodes) {
-    if (node.type === 'ontology_query') validateOntologyQueryNode(graph, node);
-  }
   assertNoExecCycles(graph, nodeById);
 }
 
-function hasIncomingDataEdge(graph, nodeId, portId) {
-  return graph.edges.some(
-    (edge) => edge.to === nodeId && edge.toPort === portId && !isExecPortId(edge.fromPort),
-  );
-}
-
-function hasAnyIncomingDataEdge(graph, nodeId, portIds) {
-  return portIds.some((portId) => hasIncomingDataEdge(graph, nodeId, portId));
-}
-
-function validateOntologyQueryNode(graph, node) {
-  const config = isRecord(node.config) ? node.config : {};
-  if (!isSchemaGraphShape(config.bodyGraph)) {
-    throw contractError('missing_ontology_body_graph', { nodeId: node.id });
-  }
-  if (!isOntologyQueryMode(config.mode) && !hasIncomingDataEdge(graph, node.id, 'mode')) {
-    throw contractError('missing_ontology_mode', { nodeId: node.id });
-  }
-  if (!isRecord(config.options) && !hasIncomingDataEdge(graph, node.id, 'options')) {
-    throw contractError('missing_ontology_options', { nodeId: node.id });
-  }
-  if (
-    !isRecord(config.graphScope) &&
-    !isRecord(config.graph) &&
-    !hasAnyIncomingDataEdge(graph, node.id, ['graphScope', 'graph'])
-  ) {
-    throw contractError('missing_ontology_graph_source', { nodeId: node.id });
-  }
-  const configAnchors =
-    typeof config.query === 'string' && config.query.trim().length > 0
-      ? true
-      : Array.isArray(config.anchors) && config.anchors.length > 0;
-  if (!configAnchors && !hasAnyIncomingDataEdge(graph, node.id, ['query', 'anchors'])) {
-    throw contractError('missing_ontology_anchor_source', { nodeId: node.id });
-  }
-}
-
-function validateNodeConfig(node) {
+function validateNodeConfig(node, options = {}) {
   const config = isRecord(node.config) ? node.config : {};
   if (node.type === 'loop') {
     const maxIterations = config.maxIterations;
     if (!Number.isSafeInteger(maxIterations) || Number(maxIterations) < 1 || Number(maxIterations) > 100) {
       throw contractError('invalid_loop_limits', { nodeId: node.id });
+    }
+  }
+  if (node.type === 'graph_rag') {
+    const maxIterations = config.maxIterations;
+    if (!Number.isSafeInteger(maxIterations) || Number(maxIterations) < 1 || Number(maxIterations) > 5) {
+      throw contractError('invalid_graph_rag_limits', { nodeId: node.id });
     }
   }
   if (node.type === 'llm_request') {
@@ -1091,25 +1294,20 @@ function validateNodeConfig(node) {
   if (node.type === 'variable_write') validateVariablePortRows(node, config, 'inputs');
   if (node.type === 'variable_read') validateVariablePortRows(node, config, 'outputs');
   if (node.type === 'constant') validateConstantPortRows(node, config);
-  if ((node.type === 'loop' || node.type === 'ontology_query') && config.bodyGraph !== undefined) {
+  if (node.type === 'loop' && config.bodyGraph !== undefined) {
     if (!isSchemaGraphShape(config.bodyGraph)) {
-      throw contractError(
-        node.type === 'ontology_query' ? 'invalid_ontology_body_graph' : 'invalid_sub_schema_class',
-        { nodeId: node.id },
-      );
+      throw contractError('invalid_sub_schema_class', { nodeId: node.id });
     }
-    validateSchemaGraphContract(config.bodyGraph);
+    validateSchemaGraphContract(config.bodyGraph, options);
   }
-  // ontology_query (issue #334/#375): режим ретрива, если задан в config, обязан
-  // быть из закрытого набора local|global|hybrid. Отсутствие валидируется ниже на
-  // уровне графа, потому что mode может прийти входом.
-  if (node.type === 'ontology_query' && config.mode !== undefined && config.mode !== null) {
-    if (!ONTOLOGY_QUERY_MODES.includes(config.mode)) {
-      throw contractError('invalid_ontology_mode', { nodeId: node.id, mode: String(config.mode) });
+  if (node.type === 'graph_rag' && config.bodyGraph !== undefined) {
+    if (!isSchemaGraphShape(config.bodyGraph)) {
+      throw contractError('invalid_sub_schema_class', { nodeId: node.id });
     }
+    validateSchemaGraphContract(config.bodyGraph, { ...options, allowInternalGraphQuery: true });
   }
   if (node.type === 'sub_schema' && config.graph !== undefined && isSchemaGraphShape(config.graph)) {
-    validateSchemaGraphContract(config.graph);
+    validateSchemaGraphContract(config.graph, options);
   }
 }
 
@@ -1297,9 +1495,6 @@ function isRecord(value) {
 exports.SCHEMA_TYPES = SCHEMA_TYPES;
 exports.NODE_TYPES = NODE_TYPES;
 exports.PORT_TYPES = PORT_TYPES;
-exports.ONTOLOGY_QUERY_MODES = ONTOLOGY_QUERY_MODES;
-exports.DEFAULT_ONTOLOGY_QUERY_MODE = DEFAULT_ONTOLOGY_QUERY_MODE;
-exports.ONTOLOGY_QUERY_MODE_LABELS = ONTOLOGY_QUERY_MODE_LABELS;
 exports.SCHEMA_TABS = SCHEMA_TABS;
 exports.NODE_TYPE_LABELS = NODE_TYPE_LABELS;
 exports.BASE_NODE_PALETTE = BASE_NODE_PALETTE;
@@ -1327,8 +1522,6 @@ exports.graphPaletteKind = graphPaletteKind;
 exports.isSubSchemaUsableIn = isSubSchemaUsableIn;
 exports.isNodeType = isNodeType;
 exports.isPortType = isPortType;
-exports.isOntologyQueryMode = isOntologyQueryMode;
-exports.ontologyQueryMode = ontologyQueryMode;
 exports.isExecPortId = isExecPortId;
 exports.isMergeExecInputId = isMergeExecInputId;
 exports.mergeExecInputPortIds = mergeExecInputPortIds;
@@ -1349,4 +1542,5 @@ exports.execOutputPortIds = execOutputPortIds;
 exports.getNodeInputPortType = getNodeInputPortType;
 exports.getNodeOutputPortType = getNodeOutputPortType;
 exports.getNodePortDefinitions = getNodePortDefinitions;
+exports.buildDefaultGraphRagBodyGraph = buildDefaultGraphRagBodyGraph;
 exports.validateSchemaGraphContract = validateSchemaGraphContract;

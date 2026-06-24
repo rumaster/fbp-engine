@@ -69,23 +69,6 @@ interface ImportSummary {
   unchanged: number;
 }
 
-const LLM_KIND_LABELS: Record<string, string> = {
-  support_consultation: 'Консультация поддержки',
-  support_expertise_detection: 'Определение экспертизы',
-  support_document_filter: 'Фильтр документов',
-  support_compilation: 'Компиляция обращения',
-  hint_generation: 'Генерация подсказки',
-  narrative_generation: 'Генерация нарратива',
-  world_state_evaluation: 'Учёт состояния',
-  media_speech: 'Озвучка',
-  media_image: 'Иллюстрация',
-  media_transcription: 'Распознавание речи',
-};
-
-function llmKindLabel(kind: string): string {
-  return LLM_KIND_LABELS[kind] ?? kind;
-}
-
 // Провайдеры LLM в формате конфига и их человекочитаемые названия.
 const PROVIDER_LABELS: Record<string, string> = {
   OPENAI: 'OpenAI',
@@ -1575,6 +1558,70 @@ function tokenUsageSummary(value: unknown): string {
   return `вход ${input} · выход ${output}`;
 }
 
+// Сворачиваемые записи LLM-лога (issue #403). Заменяют единый большой JSON: лог
+// исполнения схемы — это список вызовов, каждый показывается отдельной
+// раскрываемой записью с пометкой источника (схема · узел), запросом, ответом или
+// ошибкой, параметрами модели, токенами и подтянутой экспертизой. Используется и в
+// журнале схем, и в окне теста схемы — оба тянут лог из одного формата.
+function LlmLogRecords({ value }: { value: unknown }): ReactNode {
+  const entries = Array.isArray(value) ? (value as Array<Record<string, unknown>>) : [];
+  if (entries.length === 0) return <pre className="json-box">—</pre>;
+  return (
+    <div className="llm-log-records">
+      {entries.map((entry, index) => {
+        const nodeId = field(entry, 'nodeId') || field(entry, 'node_id');
+        const schemaSlug = field(entry, 'schemaSlug') || field(entry, 'schema_slug');
+        const request = field(entry, 'request') || field(entry, 'requestText') || field(entry, 'request_text');
+        const response = field(entry, 'response') || field(entry, 'responseText') || field(entry, 'response_text');
+        const errorText = field(entry, 'error') || field(entry, 'errorText') || field(entry, 'error_text');
+        const usage = entry.usage;
+        const modelParams = entry.modelParams ?? entry.model_params;
+        const source = [schemaSlug || '—', nodeId || '—'].join(' · ');
+        return (
+          <details key={index} className="llm-log-record">
+            <summary>
+              <span className="llm-log-source">{index + 1}. {source}</span>
+              {errorText ? <span className="badge badge-error">ошибка</span> : <span className="badge">ок</span>}
+            </summary>
+            {request && (
+              <>
+                <div className="subhead">Запрос</div>
+                <pre className="json-box">{request}</pre>
+              </>
+            )}
+            {errorText ? (
+              <>
+                <div className="subhead">Ошибка</div>
+                <pre className="json-box error-box">{errorText}</pre>
+              </>
+            ) : (
+              response && (
+                <>
+                  <div className="subhead">Ответ</div>
+                  <pre className="json-box">{response}</pre>
+                </>
+              )
+            )}
+            {usage != null && (
+              <>
+                <div className="subhead">Токены</div>
+                <pre className="json-box">{jsonPreview(usage)}</pre>
+              </>
+            )}
+            {modelParams != null && (
+              <>
+                <div className="subhead">Параметры модели</div>
+                <pre className="json-box">{jsonPreview(modelParams)}</pre>
+              </>
+            )}
+            <RetrievedDocuments value={entry.retrievedDocuments ?? entry.retrieved_documents} />
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
 // Журнал исполнения схем (issue #255, этап F). Оператор фильтрует записи по типу
 // схемы, игре и статусу и в деталях видит причину сбоя (узел, тип узла, текст и
 // сырой ответ LLM) без доступа к серверным логам.
@@ -1781,7 +1828,7 @@ function SchemaExecutionsView({
             <div className="subhead">Выходные данные</div>
             <pre className="json-box">{jsonPreview(selected.outputs_json)}</pre>
             <div className="subhead">LLM-лог</div>
-            <pre className="json-box">{jsonPreview(selected.llm_log)}</pre>
+            <LlmLogRecords value={selected.llm_log} />
           </>
         )}
       </aside>
@@ -1806,7 +1853,8 @@ function LlmRequestsView({
     sessionId: query.sessionId ?? '',
     userId: query.userId ?? '',
     telegramId: query.telegramId ?? '',
-    requestKind: query.requestKind ?? '',
+    schemaSlug: query.schemaSlug ?? '',
+    nodeId: query.nodeId ?? '',
     hasError: query.hasError ?? '',
   };
   const [filters, setFilters] = useState(committed);
@@ -1822,11 +1870,12 @@ function LlmRequestsView({
       sessionId: query.sessionId ?? '',
       userId: query.userId ?? '',
       telegramId: query.telegramId ?? '',
-      requestKind: query.requestKind ?? '',
+      schemaSlug: query.schemaSlug ?? '',
+      nodeId: query.nodeId ?? '',
       hasError: query.hasError ?? '',
     });
     setPage(1);
-  }, [query.sessionId, query.userId, query.telegramId, query.requestKind, query.hasError]);
+  }, [query.sessionId, query.userId, query.telegramId, query.schemaSlug, query.nodeId, query.hasError]);
 
   useEffect(() => {
     const params = buildPagedSearchParams(committed, page);
@@ -1837,7 +1886,7 @@ function LlmRequestsView({
         setError('');
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Не удалось загрузить запросы LLM'));
-  }, [token, committed.sessionId, committed.userId, committed.telegramId, committed.requestKind, committed.hasError, page]);
+  }, [token, committed.sessionId, committed.userId, committed.telegramId, committed.schemaSlug, committed.nodeId, committed.hasError, page]);
 
   useEffect(() => {
     const pages = pageCount(total);
@@ -1867,12 +1916,8 @@ function LlmRequestsView({
           <input placeholder="session_id" value={filters.sessionId} onChange={(event) => setFilters({ ...filters, sessionId: event.target.value })} />
           <input placeholder="user_id" value={filters.userId} onChange={(event) => setFilters({ ...filters, userId: event.target.value })} />
           <input placeholder="telegram id" value={filters.telegramId} onChange={(event) => setFilters({ ...filters, telegramId: event.target.value })} />
-          <select value={filters.requestKind} onChange={(event) => setFilters({ ...filters, requestKind: event.target.value })}>
-            <option value="">любой тип</option>
-            {Object.entries(LLM_KIND_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
+          <input placeholder="схема (slug)" value={filters.schemaSlug} onChange={(event) => setFilters({ ...filters, schemaSlug: event.target.value })} />
+          <input placeholder="узел (node_id)" value={filters.nodeId} onChange={(event) => setFilters({ ...filters, nodeId: event.target.value })} />
           <select value={filters.hasError} onChange={(event) => setFilters({ ...filters, hasError: event.target.value })}>
             <option value="">любой результат</option>
             <option value="false">без ошибки</option>
@@ -1886,7 +1931,8 @@ function LlmRequestsView({
           <thead>
             <tr>
               <th>Время</th>
-              <th>Тип</th>
+              <th>Схема</th>
+              <th>Узел</th>
               <th>Модель</th>
               <th>Пользователь</th>
               <th>Статус</th>
@@ -1896,7 +1942,8 @@ function LlmRequestsView({
             {requests.map((request) => (
               <tr key={field(request, 'id')} onClick={() => onSelect(field(request, 'id'))}>
                 <td>{formatDate(field(request, 'created_at'))}</td>
-                <td>{llmKindLabel(field(request, 'request_kind'))}</td>
+                <td>{field(request, 'schema_slug') || '—'}</td>
+                <td>{field(request, 'node_id') || '—'}</td>
                 <td>{field(request, 'model')}</td>
                 <td>{field(request, 'user_username') ? `@${field(request, 'user_username')}` : field(request, 'user_telegram_id') || '—'}</td>
                 <td>
@@ -1914,12 +1961,16 @@ function LlmRequestsView({
         {!selected && <EmptyState>Выберите запрос.</EmptyState>}
         {selected && (
           <>
-            <div className="section-title">{llmKindLabel(field(selected, 'request_kind'))}</div>
+            <div className="section-title">{field(selected, 'schema_slug') || '—'} · {field(selected, 'node_id') || '—'}</div>
             <dl className="meta-list">
               <dt>ID</dt>
               <dd>{field(selected, 'id')}</dd>
               <dt>Время</dt>
               <dd>{formatDate(field(selected, 'created_at'))}</dd>
+              <dt>Схема</dt>
+              <dd>{field(selected, 'schema_slug') || '—'}</dd>
+              <dt>Узел</dt>
+              <dd>{field(selected, 'node_id') || '—'}</dd>
               <dt>Провайдер</dt>
               <dd>{field(selected, 'provider')}</dd>
               <dt>Модель</dt>
@@ -3167,7 +3218,7 @@ function OntologyView({ token }: { token: string }) {
             <EmptyState>
               Сообществ пока нет. Они появляются после offline-индексации графа
               (бот с GRAPH_RAG_REINDEX_ON_START=true): кластеры концептов со сводкой
-              от LLM питают обзорный (global) режим узла ontology_query.
+              от LLM питают обзорный Graph RAG-ответ.
             </EmptyState>
           )}
           {communities.map((community) => (

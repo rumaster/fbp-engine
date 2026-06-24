@@ -19,7 +19,7 @@ import { calcLLMCost, getHintsWithLog, processTurn } from '@tg-games/core/engine
 import { MissingActiveSchemaError } from '@tg-games/core/engine/schemaEngine.js';
 import { generateIllustrationViaSchema } from '@tg-games/core/media/illustrationSchema.js';
 import { findModelPricing, type TokenUsage } from '@tg-games/core/llm/pricing.js';
-import type { LLMCallKind, LLMCallLogEntry } from '@tg-games/core/llm/trace.js';
+import type { LLMCallLogEntry } from '@tg-games/core/llm/trace.js';
 import { createModelRouter, type ModelRouter } from '@tg-games/core/llm/router.js';
 import { createDefaultEmbeddingProvider } from '@tg-games/core/llm/factory.js';
 import {
@@ -110,7 +110,6 @@ import {
 } from './format.js';
 import {
   formatMediaTesterReport,
-  formatTesterLlmLog,
   type MediaTesterReport,
 } from './testerLog.js';
 import {
@@ -374,7 +373,7 @@ export function createBot(
     // Подсказки используют тот же глобальный default model, что и остальные
     // текстовые LLM-запросы (issue #345).
     const router = createModelRouter(config, provider);
-    const hintRoute = await router.resolve('hint_generation');
+    const hintRoute = await router.resolve();
     let hints: string[];
     let llmLog: LLMCallLogEntry[];
     let creditsUsed: number;
@@ -413,17 +412,11 @@ export function createBot(
     });
     if (hints.length === 0) {
       await updateHint('Не удалось придумать подсказки. Попробуйте ещё раз.');
-      if (user.is_tester) {
-        await sendTesterLlmLog(ctx, 'подсказка.txt', llmLog);
-      }
       return;
     }
     setLastHints(ctx.from.id, hints);
     // Заменяем прогресс-сообщение нумерованным списком действий с кнопками.
     await updateHint(formatHints(hints), hintsKeyboard(hints));
-    if (user.is_tester) {
-      await sendTesterLlmLog(ctx, 'подсказка.txt', llmLog);
-    }
   });
 
   // ===== Inline-кнопки =====
@@ -1297,9 +1290,6 @@ async function handleSessionAction(
         label: 'игровой ход',
       });
       await progress.update(result.narrative);
-      if (user.is_tester) {
-        await sendTesterLlmLog(ctx, `${step.id}.txt`, result.llmLog);
-      }
       return;
     }
 
@@ -1353,18 +1343,12 @@ async function handleSessionAction(
         '💀 Игра окончена. Возвращаю вас в главное меню.',
         mainMenuKeyboard(),
       );
-      if (user.is_tester) {
-        await sendTesterLlmLog(ctx, `${step.id}.txt`, result.llmLog);
-      }
       return;
     }
 
     // Прикрепляем кнопки «Озвучить»/«Нарисовать иллюстрацию» к результату хода
     // (issue #71). Если медиа недоступно, keyboard === undefined и кнопок нет.
     await progress.update(result.narrative, sceneActionsKeyboard(step.id, sceneCaps));
-    if (user.is_tester) {
-      await sendTesterLlmLog(ctx, `${step.id}.txt`, result.llmLog);
-    }
   } catch (err) {
     // issue #238: ход исполняет ТОЛЬКО активная action-схема. Legacy удалён —
     // при отсутствии схемы доставляем игроку честную ошибку вместо «зависшего»
@@ -1546,7 +1530,6 @@ async function saveSttLlmRequestLog(input: {
   const logs = buildLlmRequestLogInputs(
     [
       {
-        kind: 'media_transcription',
         request: input.request,
         response: input.error ? `Ошибка: ${input.error}` : (input.response ?? ''),
         error: input.error,
@@ -1766,29 +1749,21 @@ async function saveRoutedTextLlmRequestLogs(input: {
   stepId?: string;
   label: string;
 }): Promise<void> {
-  const byKind = new Map<LLMCallKind, LLMCallLogEntry[]>();
-  for (const entry of input.entries) {
-    if (!entry.kind) continue; // у текстовых запросов kind всегда задан
-    const list = byKind.get(entry.kind) ?? [];
-    list.push(entry);
-    byKind.set(entry.kind, list);
-  }
-
-  const logs = [];
-  for (const [kind, entries] of byKind) {
-    const routed = await input.router.resolve(kind);
-    logs.push(
-      ...buildLlmRequestLogInputs(entries, {
-        userId: input.userId,
-        sessionId: input.sessionId,
-        stepId: input.stepId,
-        provider: routed.provider.name,
-        model: routed.model,
-        modelParams: routedTextModelParams(input.config, routed.providerName),
-        pricing: routed.pricing,
-      }),
-    );
-  }
+  // Все текстовые запросы хода идут через один глобальный default model
+  // (issue #345), поэтому модель и цену достаточно разрешить один раз.
+  // Источник запроса (схема/узел) уже проставлен в каждой записи лога движком
+  // схемы (issue #403) и сохраняется в аудит как есть.
+  if (input.entries.length === 0) return;
+  const routed = await input.router.resolve();
+  const logs = buildLlmRequestLogInputs(input.entries, {
+    userId: input.userId,
+    sessionId: input.sessionId,
+    stepId: input.stepId,
+    provider: routed.provider.name,
+    model: routed.model,
+    modelParams: routedTextModelParams(input.config, routed.providerName),
+    pricing: routed.pricing,
+  });
   await insertLlmRequestLogsSafely(logs, input.label);
 }
 
@@ -1805,11 +1780,9 @@ async function saveMediaLlmRequestLog(input: {
   error?: string;
   usage?: LLMCallLogEntry['usage'];
 }): Promise<void> {
-  const requestKind = input.kind === 'tts' ? 'media_speech' : 'media_image';
   const logs = buildLlmRequestLogInputs(
     [
       {
-        kind: requestKind,
         request: input.request,
         response: input.error ? `Ошибка: ${input.error}` : (input.response ?? ''),
         error: input.error,
@@ -1949,19 +1922,6 @@ async function safeUpdateProgress(
     // Если Telegram не дал отредактировать временное сообщение, медиа уже не
     // должно считаться неуспешным.
   }
-}
-
-async function sendTesterLlmLog(
-  ctx: Context,
-  filename: string,
-  llmLog: LLMCallLogEntry[],
-): Promise<void> {
-  if (llmLog.length === 0) return;
-  const document = Input.fromBuffer(
-    Buffer.from(formatTesterLlmLog(llmLog), 'utf8'),
-    filename,
-  );
-  await ctx.replyWithDocument(document);
 }
 
 /**

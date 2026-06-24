@@ -158,10 +158,11 @@ describe('пример support-схемы с фильтром экспертиз
     expect(calls[1][0].prompt).toContain('2. Документ B');
     expect(calls[2][0].prompt).toContain('Содержимое документа B.');
     expect(calls[2][0].prompt).not.toContain('Содержимое документа A.');
-    expect(execContext.llmLog.map((entry) => entry.kind)).toEqual([
-      'support_expertise_detection',
-      'support_document_filter',
-      'support_consultation',
+    expect(execContext.llmLog.map((entry) => entry.nodeId)).toEqual([
+      'support_expertise',
+      'document_filter',
+      'support_reply',
     ]);
+    expect(execContext.llmLog.every((entry) => entry.schemaSlug === 'support')).toBe(true);
   });
 });

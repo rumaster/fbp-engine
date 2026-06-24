@@ -106,6 +106,10 @@ const schemaTestSchema = z
     // стороны. Опционален и применяется только к суб-схемам — для пайплайн-схем
     // домен задаётся самим типом схемы.
     context: z.enum(['support', 'game']).optional(),
+    // Путь к телу узла для изолированного теста (issue #390): список id узлов
+    // loop/graph_rag от корня к вложенному. Если задан — прогоняется bodyGraph
+    // самого вложенного узла, а inputs подаются ему как его входы.
+    nodePath: z.array(z.string().trim().min(1)).optional(),
   })
   .transform(({ game_id, gameId, ...rest }) => ({
     ...rest,
@@ -558,7 +562,8 @@ export class AdminController {
     @Query('userId') userId: string | undefined,
     @Query('telegramId') telegramId: string | undefined,
     @Query('sessionId') sessionId: string | undefined,
-    @Query('requestKind') requestKind: string | undefined,
+    @Query('schemaSlug') schemaSlug: string | undefined,
+    @Query('nodeId') nodeId: string | undefined,
     @Query('hasError') hasError: string | undefined,
     @Query('limit') limit: string | undefined,
     @Query('offset') offset: string | undefined,
@@ -567,7 +572,8 @@ export class AdminController {
       userId: optionalString(userId),
       telegramId: optionalString(telegramId),
       sessionId: optionalString(sessionId),
-      requestKind: optionalString(requestKind),
+      schemaSlug: optionalString(schemaSlug),
+      nodeId: optionalString(nodeId),
       hasError: parseBooleanFlag(hasError),
       ...parsePageQuery(limit, offset),
     });

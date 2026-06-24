@@ -4,7 +4,7 @@ import neo4j, {
   type QueryResult,
   type Session,
 } from 'neo4j-driver';
-import { loadConfig } from '../config.js';
+import { loadNeo4jConfig } from '../config.js';
 
 export interface Neo4jQueryRunner {
   run<T extends Record<string, unknown> = Record<string, unknown>>(
@@ -17,14 +17,16 @@ let driver: Driver | null = null;
 
 function getNeo4jDriver(): Driver {
   if (!driver) {
-    const { neo4j: config } = loadConfig();
+    // Конфиг Neo4j грузим отдельно от полного конфига приложения, чтобы
+    // миграции графа не требовали TELEGRAM_BOT_TOKEN (issue #408).
+    const config = loadNeo4jConfig();
     driver = neo4j.driver(config.uri, neo4j.auth.basic(config.user, config.password));
   }
   return driver;
 }
 
 function getSession(mode: 'READ' | 'WRITE'): Session {
-  const { neo4j: config } = loadConfig();
+  const config = loadNeo4jConfig();
   return getNeo4jDriver().session({
     database: config.database,
     defaultAccessMode: mode === 'READ' ? neo4j.session.READ : neo4j.session.WRITE,

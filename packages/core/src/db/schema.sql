@@ -418,15 +418,18 @@ CREATE INDEX IF NOT EXISTS idx_support_messages_ticket
 -- Аудит запросов к LLM и медиа-моделям (issue #83)
 -- ============================================================================
 
--- Один ряд = один фактический запрос к модели: консультация СП, подсказка,
--- нарратив, учёт состояния мира, озвучка или генерация иллюстрации.
+-- Один ряд = один фактический запрос к модели. Источник запроса описывается
+-- слагом схемы и идентификатором узла (issue #403): по ним лог фильтруется и
+-- сопоставляется со схемой/узлом. У не-схемных запросов (озвучка, иллюстрация,
+-- распознавание речи) схемы нет — schema_slug/node_id остаются NULL.
 CREATE TABLE IF NOT EXISTS llm_request_logs (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id           UUID REFERENCES users (id) ON DELETE SET NULL,
     session_id        UUID REFERENCES game_sessions (id) ON DELETE SET NULL,
     step_id           UUID REFERENCES game_steps (id) ON DELETE SET NULL,
     support_ticket_id UUID REFERENCES support_tickets (id) ON DELETE SET NULL,
-    request_kind      VARCHAR(50)  NOT NULL,
+    schema_slug       VARCHAR(100),
+    node_id           VARCHAR(200),
     provider          VARCHAR(50)  NOT NULL,
     model             VARCHAR(255) NOT NULL,
     model_params      JSONB        NOT NULL DEFAULT '{}'::jsonb,
@@ -446,6 +449,12 @@ CREATE TABLE IF NOT EXISTS llm_request_logs (
 ALTER TABLE llm_request_logs
     ADD COLUMN IF NOT EXISTS retrieved_documents JSONB;
 
+-- Источник запроса: схема и узел (issue #403) для уже существующих БД.
+ALTER TABLE llm_request_logs
+    ADD COLUMN IF NOT EXISTS schema_slug VARCHAR(100);
+ALTER TABLE llm_request_logs
+    ADD COLUMN IF NOT EXISTS node_id VARCHAR(200);
+
 CREATE INDEX IF NOT EXISTS idx_llm_request_logs_created
     ON llm_request_logs (created_at DESC);
 
@@ -457,6 +466,10 @@ CREATE INDEX IF NOT EXISTS idx_llm_request_logs_step
 
 CREATE INDEX IF NOT EXISTS idx_llm_request_logs_support_ticket
     ON llm_request_logs (support_ticket_id, created_at);
+
+-- Фильтрация логов по схеме-источнику запроса (issue #403).
+CREATE INDEX IF NOT EXISTS idx_llm_request_logs_schema
+    ON llm_request_logs (schema_slug, created_at);
 
 -- ============================================================================
 -- Алиасы моделей Azure OpenAI (issue #120)

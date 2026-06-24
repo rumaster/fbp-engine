@@ -1,10 +1,10 @@
 /**
- * Graph RAG — сборка контекста узла ontology_query по режиму (issue #334, §4.3).
+ * Graph RAG — сборка контекста по режиму ретрива (issue #334, §4.3).
  *
- * Узел ontology_query (#323) обходит граф концептов от якорей сцены и кладёт в
- * `{{expertise}}` локальный подграф. Graph RAG добавляет ВТОРОЙ выход —
- * `{{graph_context}}` — и режим ретрива `config.mode`:
- *   • local  — только локальный подграф (как раньше; обратная совместимость);
+ * Локальный ретрив обходит граф концептов от якорей сцены и кладёт в
+ * `{{expertise}}` локальный подграф. Graph RAG добавляет контекстный канал
+ * `{{graph_context}}` и режим ретрива:
+ *   • local  — только локальный подграф;
  *   • global — обзорные сводки сообществ (map-reduce: выбираем релевантные сцене
  *     кластеры и конкатенируем их сводки — БЕЗ LLM на горячем пути, дёшево и
  *     детерминированно, чего не даёт ни Vector RAG, ни локальный обход);
@@ -16,7 +16,7 @@
  * сборку тривиально тестируемой.
  */
 
-import type { OntologyQueryMode } from '@tg-games/schema-contract';
+export type GraphContextMode = 'local' | 'global' | 'hybrid';
 
 /**
  * Сводка сообщества в форме, нужной сборке контекста. Структурно совместима с
@@ -113,7 +113,7 @@ export interface GraphContextParams {
  *
  * Детерминированная конкатенация — горячий путь хода не делает LLM-вызовов.
  */
-export function buildGraphContext(mode: OntologyQueryMode, params: GraphContextParams): string {
+export function buildGraphContext(mode: GraphContextMode, params: GraphContextParams): string {
   if (mode === 'local') return params.localBlock;
 
   const selected = selectRelevantCommunities(params.communities, params.sceneSlugs, {

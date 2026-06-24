@@ -203,7 +203,6 @@ export async function runMemoryExtraction(
         provider,
         { prompt, systemInstruction, jsonMode: true },
         llmLog,
-        { kind: 'game_memory_extraction' },
       );
     } catch (err) {
       console.warn(

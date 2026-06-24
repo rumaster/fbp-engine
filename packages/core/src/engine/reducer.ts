@@ -1,8 +1,5 @@
 import type { ILLMProvider } from '../llm/ILLMProvider.js';
-import type {
-  LLMCallKind,
-  LLMCallLogEntry,
-} from '../llm/trace.js';
+import type { LLMCallLogEntry } from '../llm/trace.js';
 import type { ModelRouter } from '../llm/router.js';
 import type { IEmbeddingProvider } from '../llm/embeddings.js';
 import type { GameManifest } from '../games/manifests.js';
@@ -80,27 +77,6 @@ export function calcLLMCost(
   const tokenUsage = aggregateTokenUsage(log);
   const creditsUsed = tokensToCredits(log);
   const costMillicents = pricing ? calcCostMillicents(tokenUsage, pricing) : 0;
-  return { tokenUsage, creditsUsed, costMillicents };
-}
-
-/**
- * Считает стоимость лога через resolver цены по kind. Сейчас все текстовые
- * запросы обычно получают одну глобальную default-модель, но формат оставлен
- * покиндовым, чтобы корректно считать уже сгруппированный аудит схем.
- */
-export function calcLLMCostByKind(
-  log: LLMCallLogEntry[],
-  pricingForKind: (kind: LLMCallKind | undefined) => ModelPricing | null,
-): { tokenUsage: TokenUsage; creditsUsed: number; costMillicents: number } {
-  const tokenUsage = aggregateTokenUsage(log);
-  const creditsUsed = tokensToCredits(log);
-  let costMillicents = 0;
-  for (const entry of log) {
-    const pricing = pricingForKind(entry.kind);
-    if (pricing) {
-      costMillicents += calcCostMillicents(usageToTokenUsage(entry.usage), pricing);
-    }
-  }
   return { tokenUsage, creditsUsed, costMillicents };
 }
 
@@ -238,6 +214,11 @@ async function logSchemaExecutionSafely(input: SchemaExecutionLogInput): Promise
   }
 }
 
+/**
+ * Считает стоимость лога исполнения схемы. Все текстовые запросы используют один
+ * глобальный default model (issue #345), поэтому цену достаточно получить один
+ * раз через роутер; при его отсутствии берётся переданный pricing.
+ */
 async function calcSchemaLLMCost(
   log: LLMCallLogEntry[],
   pricing: ModelPricing | null,
@@ -245,22 +226,16 @@ async function calcSchemaLLMCost(
 ): Promise<{ tokenUsage: TokenUsage; creditsUsed: number; costMillicents: number }> {
   if (!router) return calcLLMCost(log, pricing);
 
-  const pricingByKind = new Map<LLMCallKind, ModelPricing | null>();
-  for (const entry of log) {
-    if (!entry.kind || pricingByKind.has(entry.kind)) continue;
-    try {
-      const route = await router.resolve(entry.kind);
-      pricingByKind.set(entry.kind, route.pricing);
-    } catch (err) {
-      console.warn(
-        `[schema-engine] не удалось получить цену модели для ${entry.kind}: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-      );
-      pricingByKind.set(entry.kind, null);
-    }
+  try {
+    const route = await router.resolve();
+    return calcLLMCost(log, route.pricing);
+  } catch (err) {
+    console.warn(
+      '[schema-engine] не удалось получить цену модели для расчёта стоимости: ' +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return calcLLMCost(log, pricing);
   }
-
-  return calcLLMCostByKind(log, (kind) => (kind ? (pricingByKind.get(kind) ?? null) : null));
 }
 
 async function processViaSchema(options: ProcessTurnOptions): Promise<TurnResult | null> {

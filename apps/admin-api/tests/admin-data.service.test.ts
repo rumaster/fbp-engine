@@ -109,7 +109,7 @@ describe('AdminDataService', () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE game_groups'))).toBe(false);
   });
 
-  it('фильтрует лог LLM-запросов по сессии, типу и признаку ошибки', async () => {
+  it('фильтрует лог LLM-запросов по сессии, схеме, узлу и признаку ошибки', async () => {
     const query = vi
       .fn()
       .mockResolvedValueOnce({ rows: [{ total: 3 }] })
@@ -118,7 +118,8 @@ describe('AdminDataService', () => {
 
     const result = await service.listLlmRequests({
       sessionId: 'sess-1',
-      requestKind: 'narrative_generation',
+      schemaSlug: 'action',
+      nodeId: 'narrative',
       hasError: true,
       limit: 50,
       offset: 0,
@@ -127,9 +128,12 @@ describe('AdminDataService', () => {
     expect(result).toEqual({ total: 3, items: [{ id: 'req-1' }] });
     const listCall = query.mock.calls[1];
     expect(String(listCall[0])).toContain('FROM llm_request_logs');
+    expect(String(listCall[0])).toContain('l.schema_slug = ');
+    expect(String(listCall[0])).toContain('l.node_id = ');
     expect(String(listCall[0])).toContain('l.error_text IS NOT NULL');
     expect(listCall[1]).toContain('sess-1');
-    expect(listCall[1]).toContain('narrative_generation');
+    expect(listCall[1]).toContain('action');
+    expect(listCall[1]).toContain('narrative');
   });
 
   it('фильтрует лог LLM-запросов без ошибок', async () => {

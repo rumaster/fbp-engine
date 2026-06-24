@@ -3,7 +3,6 @@ import type {
   NodeDefinition,
   SchemaGraph,
   SchemaType,
-  SubSchemaClass,
 } from '../../engine/schemaEngine.js';
 import { getPool } from '../pool.js';
 import { DEFAULT_PROMPT_TEMPLATES } from './defaultPromptTemplates.js';
@@ -68,10 +67,6 @@ export function buildDefaultSchemas(templates: PromptTemplateMap): DefaultSchema
       graph: buildDefaultSupportSchema(templates),
       description: 'Глобальная схема консультации поддержки (встроенный дефолт)',
     },
-    {
-      graph: buildDefaultOntologyExampleSubSchema(),
-      description: 'Игровая суб-схема ontoligy-example: пример обвязки ontology_query для нарратива',
-    },
   ];
 }
 
@@ -112,38 +107,6 @@ if (typeof uc.hp === 'number') char.hp = uc.hp;
 if (Object.keys(char).length > 0) out.character = char;
 if (u.world_time && typeof u.world_time === 'object') out.world_time = u.world_time;
 return out;
-`;
-
-const PREPARE_ONTOLOGY_EXAMPLE = `
-const sourceManifest = input.manifest && typeof input.manifest === 'object' ? input.manifest : manifest;
-const sourceState = input.state && typeof input.state === 'object' ? input.state : state;
-const action = typeof input.action === 'string' ? input.action.trim() : '';
-const location = typeof sourceState.location === 'string' ? sourceState.location.trim() : '';
-const previousNarrative = typeof sourceState.narrative === 'string' ? sourceState.narrative.trim() : '';
-const worldTime = sourceState.world_time && typeof sourceState.world_time === 'object' ? sourceState.world_time : {};
-const season = typeof worldTime.season === 'string' ? worldTime.season : undefined;
-const timeOfDay = typeof worldTime.time_of_day === 'string' ? worldTime.time_of_day : undefined;
-const gameId = typeof sourceManifest.id === 'string' ? sourceManifest.id.trim() : '';
-const queryParts = [];
-if (action) queryParts.push('Действие игрока: ' + action);
-if (location) queryParts.push('Текущая локация: ' + location);
-if (previousNarrative) queryParts.push('Последний нарратив: ' + previousNarrative);
-return {
-  query: queryParts.join('\\n'),
-  graphScope: { type: 'game', gameId },
-  traversalContext: {
-    season,
-    location: location || undefined,
-    timeOfDay,
-  },
-  options: {
-    depth: 2,
-    decay: 0.6,
-    maxConcepts: 12,
-    maxRelations: 16,
-  },
-  mode: 'hybrid',
-};
 `;
 
 export function buildDefaultActionSchema(templates: PromptTemplateMap): SchemaGraph {
@@ -431,155 +394,6 @@ export function buildDefaultSupportSchema(templates: PromptTemplateMap): SchemaG
   ]);
 }
 
-export function buildDefaultOntologyExampleSubSchema(): SchemaGraph {
-  const prepare = node(
-    'prepare_query',
-    'transform',
-    300,
-    0,
-    {
-      inputs: [
-        { name: 'action', type: 'string' },
-        { name: 'manifest', type: 'object' },
-        { name: 'state', type: 'object' },
-      ],
-      outputs: [
-        { name: 'query', path: 'result.query', type: 'string' },
-        { name: 'graphScope', path: 'result.graphScope', type: 'object' },
-        { name: 'traversalContext', path: 'result.traversalContext', type: 'object' },
-        { name: 'options', path: 'result.options', type: 'object' },
-        { name: 'mode', path: 'result.mode', type: 'string' },
-      ],
-      code: PREPARE_ONTOLOGY_EXAMPLE,
-    },
-    'Подготовка запроса',
-  );
-  const ontology = node(
-    'ontology_query',
-    'ontology_query',
-    620,
-    0,
-    { bodyGraph: buildOntologyQueryTraversalBodyGraph('ontoligy-example::ontology_query_body') },
-    'Строгий ontology_query',
-  );
-  const nodes: NodeDefinition[] = [
-    node(
-      'start',
-      'start',
-      0,
-      0,
-      {
-        outputs: [{ id: 'action', label: 'Action', type: 'string' }],
-      },
-      'Start',
-    ),
-    node('manifest', 'manifest', 0, -180, {}, 'Манифест'),
-    node('state_read', 'game_state_read', 0, 180, {}, 'Чтение состояния'),
-    prepare,
-    ontology,
-    node(
-      'end',
-      'end',
-      920,
-      0,
-      {
-        inputs: [
-          { id: 'result', label: 'Result', type: 'expertise' },
-          { id: 'expertise', label: 'Expertise', type: 'expertise' },
-          { id: 'graph_context', label: 'Graph context', type: 'expertise' },
-          { id: 'subgraph', label: 'Subgraph', type: 'object' },
-          { id: 'trace', label: 'Trace', type: 'object' },
-        ],
-      },
-      'End',
-    ),
-  ];
-  return subSchemaGraph('ontoligy-example', 'game', nodes, [
-    exec('start', 'ontology_query'),
-    exec('ontology_query', 'end'),
-    data('start', 'action', 'prepare_query', 'action'),
-    data('manifest', 'manifest', 'prepare_query', 'manifest'),
-    data('state_read', 'state', 'prepare_query', 'state'),
-    data('prepare_query', 'query', 'ontology_query', 'query'),
-    data('prepare_query', 'graphScope', 'ontology_query', 'graphScope'),
-    data('prepare_query', 'traversalContext', 'ontology_query', 'traversalContext'),
-    data('prepare_query', 'options', 'ontology_query', 'options'),
-    data('prepare_query', 'mode', 'ontology_query', 'mode'),
-    data('ontology_query', 'graph_context', 'end', 'result'),
-    data('ontology_query', 'expertise', 'end', 'expertise'),
-    data('ontology_query', 'graph_context', 'end', 'graph_context'),
-    data('ontology_query', 'subgraph', 'end', 'subgraph'),
-    data('ontology_query', 'trace', 'end', 'trace'),
-  ]);
-}
-
-export function buildOntologyQueryTraversalBodyGraph(slug: string): SchemaGraph {
-  const nodes: NodeDefinition[] = [
-    node(
-      'start',
-      'start',
-      0,
-      0,
-      {
-        outputs: [
-          { id: 'graph', label: 'Graph', type: 'object' },
-          { id: 'query', label: 'Query', type: 'string' },
-          { id: 'anchors', label: 'Anchors', type: 'string_array' },
-          { id: 'traversalContext', label: 'Traversal context', type: 'object' },
-          { id: 'options', label: 'Options', type: 'object' },
-          { id: 'mode', label: 'Mode', type: 'string' },
-          { id: 'communities', label: 'Communities', type: 'object_array' },
-        ],
-      },
-      'Start',
-    ),
-    node('anchor_match', 'ontology_anchor_match', 280, -120, {}, 'Match anchors'),
-    node('frontier_expand', 'ontology_frontier_expand', 560, -120, {}, 'Expand frontier'),
-    node('budget_select', 'ontology_budget_select', 840, -120, {}, 'Apply budgets'),
-    node('context_build', 'ontology_context_build', 1120, -120, {}, 'Build context'),
-    node(
-      'end',
-      'end',
-      1400,
-      0,
-      {
-        inputs: [
-          { id: 'expertise', label: 'Expertise', type: 'expertise' },
-          { id: 'graph_context', label: 'Graph context', type: 'expertise' },
-          { id: 'subgraph', label: 'Subgraph', type: 'object' },
-          { id: 'trace', label: 'Trace', type: 'object' },
-        ],
-      },
-      'End',
-    ),
-  ];
-  return subSchemaGraph(slug, 'common', nodes, [
-    exec('start', 'anchor_match'),
-    exec('anchor_match', 'frontier_expand'),
-    exec('frontier_expand', 'budget_select'),
-    exec('budget_select', 'context_build'),
-    exec('context_build', 'end'),
-    data('start', 'graph', 'anchor_match', 'graph'),
-    data('start', 'query', 'anchor_match', 'query'),
-    data('start', 'anchors', 'anchor_match', 'anchors'),
-    data('start', 'graph', 'frontier_expand', 'graph'),
-    data('anchor_match', 'anchorSlugs', 'frontier_expand', 'anchorSlugs'),
-    data('start', 'traversalContext', 'frontier_expand', 'traversalContext'),
-    data('start', 'options', 'frontier_expand', 'options'),
-    data('frontier_expand', 'subgraph', 'budget_select', 'subgraph'),
-    data('start', 'options', 'budget_select', 'options'),
-    data('frontier_expand', 'trace', 'budget_select', 'trace'),
-    data('budget_select', 'subgraph', 'context_build', 'subgraph'),
-    data('start', 'communities', 'context_build', 'communities'),
-    data('start', 'mode', 'context_build', 'mode'),
-    data('budget_select', 'trace', 'context_build', 'trace'),
-    data('context_build', 'expertise', 'end', 'expertise'),
-    data('context_build', 'graph_context', 'end', 'graph_context'),
-    data('budget_select', 'subgraph', 'end', 'subgraph'),
-    data('context_build', 'trace', 'end', 'trace'),
-  ]);
-}
-
 function graph(
   slug: string,
   schemaType: SchemaType,
@@ -587,15 +401,6 @@ function graph(
   edges: EdgeDefinition[],
 ): SchemaGraph {
   return { version: 1, slug, schemaType, nodes, edges, variables: {} };
-}
-
-function subSchemaGraph(
-  slug: string,
-  subSchemaClass: SubSchemaClass,
-  nodes: NodeDefinition[],
-  edges: EdgeDefinition[],
-): SchemaGraph {
-  return { version: 1, slug, subSchemaClass, nodes, edges, variables: {} };
 }
 
 function node(

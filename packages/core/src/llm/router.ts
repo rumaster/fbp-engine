@@ -1,6 +1,5 @@
 import type { AppConfig, LLMProviderName } from '../config.js';
 import type { ILLMProvider } from './ILLMProvider.js';
-import type { LLMCallKind } from './trace.js';
 import type { ModelPricing } from './pricing.js';
 import { buildLLMProvider } from './factory.js';
 import { resolveModelPricing } from '../db/repositories/azureModels.js';
@@ -17,10 +16,11 @@ export interface RoutedModel {
 
 /**
  * Маршрутизатор модели (issue #345): все текстовые LLM-запросы используют один
- * глобальный default model поверх активного провайдера из .env.
+ * глобальный default model поверх активного провайдера из .env. Аргумент
+ * «тип запроса» убран (issue #403) — он не влиял на выбор модели.
  */
 export interface ModelRouter {
-  resolve(kind: LLMCallKind): Promise<RoutedModel>;
+  resolve(): Promise<RoutedModel>;
 }
 
 /**

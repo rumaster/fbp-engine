@@ -13,6 +13,7 @@ import {
   isAdminSchemaType,
   isAdminSubSchemaClass,
   normalizeSchemaGraph,
+  resolveNodeBodyGraph,
   SUB_SCHEMA_CLASSES,
   type AdminSchemaGraph,
   type AdminNodeType,
@@ -245,7 +246,8 @@ interface RuntimeLLMUsage {
 }
 
 interface RuntimeLlmLogEntry {
-  kind?: string;
+  schemaSlug?: string;
+  nodeId?: string;
   request: string;
   response: string;
   error?: string;
@@ -284,7 +286,7 @@ interface RuntimeSchemaTestProvider {
 }
 
 interface RuntimeModelRouter {
-  resolve(kind: string): Promise<RuntimeRoutedModel>;
+  resolve(): Promise<RuntimeRoutedModel>;
 }
 
 interface RuntimeNodeTraceEntry {
@@ -294,6 +296,9 @@ interface RuntimeNodeTraceEntry {
   durationMs: number;
   outputKeys: string[];
   outputs: Record<string, unknown>;
+  // Снимок входов узла (issue #406): значения, пришедшие по data-портам. Нужен для
+  // упавших узлов — оператор видит в логе теста входы и может воспроизвести сбой.
+  inputs: Record<string, unknown>;
   schemaSlug: string;
   depth: number;
   failed: boolean;
@@ -1270,7 +1275,16 @@ export class AdminDataService {
     if (!row) throw new NotFoundException('Схема не найдена');
     // Тест выполняется на черновике (issue #286): если черновик есть — используем его,
     // иначе — рабочую версию.
-    const graphJson = row.draft_graph_json ?? row.graph_json;
+    const schemaGraphJson = row.draft_graph_json ?? row.graph_json;
+    // Изолированный тест тела узла (issue #390): если задан путь к узлу loop/graph_rag,
+    // прогоняем не всю схему, а bodyGraph самого вложенного узла. Тогда `inputs` —
+    // это значения входов тестируемого узла (они подаются телу как его входы и могут
+    // не совпадать с портами внутреннего start тела).
+    const bodyTest =
+      input.nodePath && input.nodePath.length > 0
+        ? resolveNodeBodyGraph(schemaGraphJson, input.nodePath)
+        : null;
+    const graphJson = bodyTest ? bodyTest.graph : schemaGraphJson;
     const startedAt = Date.now();
     const llmLog: RuntimeLlmLogEntry[] = [];
     // Полный отчёт по узлам теста (issue #347): движок наполняет массив записью на
@@ -1317,6 +1331,11 @@ export class AdminDataService {
         // явно по домену вызывающей стороны. Так общая суб-схема, тестируемая в
         // контексте поддержки, ищет в документах СП, а не в пустой экспертизе игры.
         expertiseDomain: callerKind === 'support' ? 'support' : 'game',
+        // Изолированный тест тела graph_rag (issue #390): тело содержит служебные
+        // graph_query-узлы, которые в обычном рантайме разрешены только внутри
+        // graph_rag. Прогоняя тело напрямую, выставляем тот же флаг, иначе узел сразу
+        // бросает «graph_query доступен только внутри graph_rag».
+        ...(bodyTest?.nodeType === 'graph_rag' ? { internalGraphQueryAllowed: true } : {}),
         resolveSubSchema: async (subSlug: string) => {
           const subRow = await this.findActiveSchema(subSlug, context.gameId);
           if (!subRow) return null;
@@ -1336,6 +1355,7 @@ export class AdminDataService {
       const formattedLog = formatSchemaTestLog(llmLog);
       const costMillicents = await this.calcSchemaTestCost(llmLog, router);
       await this.logSchemaTestExecution(row, context, executionInputs, outputs, llmLog, durationMs);
+      await this.logSchemaTestLlmRequests(row, llmLog, router);
       return {
         outputs,
         llmLog: formattedLog,
@@ -1355,6 +1375,7 @@ export class AdminDataService {
         durationMs,
         summary,
       );
+      if (router) await this.logSchemaTestLlmRequests(row, llmLog, router);
       // Отчёт по узлам прикладываем и к ошибке (issue #347): движок наполнял nodeTrace
       // по ходу исполнения, поэтому в нём видно, какие ноды успели отработать и на
       // какой именно остановился поток (последняя запись — упавший узел).
@@ -1501,7 +1522,8 @@ export class AdminDataService {
     userId?: string;
     telegramId?: string;
     sessionId?: string;
-    requestKind?: string;
+    schemaSlug?: string;
+    nodeId?: string;
     hasError?: boolean;
     limit: number;
     offset: number;
@@ -1516,7 +1538,8 @@ export class AdminDataService {
     if (input.userId) where.push(`l.user_id = ${add(input.userId)}`);
     if (input.telegramId) where.push(`u.telegram_id::text ILIKE ${add(likePattern(input.telegramId))} ESCAPE '\\'`);
     if (input.sessionId) where.push(`l.session_id = ${add(input.sessionId)}`);
-    if (input.requestKind) where.push(`l.request_kind = ${add(input.requestKind)}`);
+    if (input.schemaSlug) where.push(`l.schema_slug = ${add(input.schemaSlug)}`);
+    if (input.nodeId) where.push(`l.node_id = ${add(input.nodeId)}`);
     if (input.hasError === true) where.push('l.error_text IS NOT NULL');
     if (input.hasError === false) where.push('l.error_text IS NULL');
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
@@ -1536,7 +1559,8 @@ export class AdminDataService {
          l.session_id,
          l.step_id,
          l.support_ticket_id,
-         l.request_kind,
+         l.schema_slug,
+         l.node_id,
          l.provider,
          l.model,
          (l.error_text IS NOT NULL) AS has_error,
@@ -2022,9 +2046,8 @@ export class AdminDataService {
   }
 
   // ───────────────────────── Онтология (issue #323) ─────────────────────────
-  // Альтернатива RAG: знания мира — типизированный граф концептов и связей.
-  // Привязка к игре обязательна (граф всегда принадлежит игре). Узел движка
-  // ontology_query обходит граф и сериализует подграф в тот же блок {{expertise}}.
+  // Альтернатива Vector RAG: знания мира — типизированный граф концептов и связей.
+  // Привязка к игре обязательна, потому что граф всегда принадлежит игре.
 
   /**
    * Граф онтологии игры целиком (концепты + связи) для админки. Поля origin и
@@ -2040,9 +2063,9 @@ export class AdminDataService {
 
   /**
    * Сообщества графа игры со сводками (issue #328, Graph RAG). Сообщества —
-   * производная графа (кластеры концептов с LLM-сводкой), питают глобальный
-   * (обзорный) запрос узла ontology_query. Только чтение: набор перестраивается
-   * offline-индексацией бота, не правится поштучно в админке.
+   * производная графа (кластеры концептов с LLM-сводкой), питают обзорный
+   * Graph RAG-запрос. Только чтение: набор перестраивается offline-индексацией
+   * бота, не правится поштучно в админке.
    */
   async getGameCommunities(gameId: string) {
     await this.assertGameExists(gameId);
@@ -2195,7 +2218,8 @@ export class AdminDataService {
          l.session_id,
          l.step_id,
          l.support_ticket_id,
-         l.request_kind,
+         l.schema_slug,
+         l.node_id,
          l.provider,
          l.model,
          l.model_params,
@@ -2763,11 +2787,11 @@ export class AdminDataService {
     router: RuntimeModelRouter,
   ): Promise<number> {
     let total = 0;
+    const route = await router.resolve();
+    if (!route.pricing) return 0;
     for (const entry of llmLog) {
       const usage = usageToTokenUsage(entry.usage);
       if (isEmptyTokenUsage(usage)) continue;
-      const route = entry.kind ? await router.resolve(entry.kind) : null;
-      if (!route?.pricing) continue;
       total += calcCostMillicents(usage, route.pricing);
     }
     return total;
@@ -2809,6 +2833,59 @@ export class AdminDataService {
       );
     } catch (err) {
       console.error('[admin-schema-test] не удалось записать schema_execution_log:', err);
+    }
+  }
+
+  /**
+   * Сохраняет каждый LLM-запрос тестового прогона схемы в общий аудит
+   * llm_request_logs (issue #403, R3). Логируется КАЖДЫЙ вызов — и из игрового
+   * хода, и из теста схемы — с указанием слага схемы и узла-источника. Сессии у
+   * теста нет (user_id/session_id = NULL), поэтому записи отличимы по schema_slug.
+   * Best-effort: ошибка аудита не должна ломать тест.
+   */
+  private async logSchemaTestLlmRequests(
+    row: SchemaRow,
+    llmLog: readonly RuntimeLlmLogEntry[],
+    router: RuntimeModelRouter,
+  ): Promise<void> {
+    if (llmLog.length === 0) return;
+    try {
+      const route = await router.resolve();
+      for (const entry of llmLog) {
+        const usage = usageToTokenUsage(entry.usage);
+        const cost = route.pricing ? calcCostMillicents(usage, route.pricing) : 0;
+        const nodeId =
+          entry.nodeId ??
+          (typeof entry.modelParams?.nodeId === 'string' ? entry.modelParams.nodeId : null);
+        const schemaSlug = entry.schemaSlug ?? row.schema_slug ?? null;
+        await this.database.query(
+          `INSERT INTO llm_request_logs (
+             user_id, session_id, step_id, support_ticket_id, schema_slug, node_id,
+             provider, model, model_params, request_text, response_text, error_text,
+             token_usage, cost_millicents, retrieved_documents
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb, $14, $15::jsonb)`,
+          [
+            null,
+            null,
+            null,
+            null,
+            schemaSlug,
+            nodeId,
+            route.provider.name,
+            route.model,
+            JSON.stringify(entry.modelParams ?? {}),
+            entry.request,
+            entry.error ? null : entry.response,
+            entry.error ?? null,
+            JSON.stringify(usage),
+            cost,
+            entry.retrievedDocuments ? JSON.stringify(entry.retrievedDocuments) : null,
+          ],
+        );
+      }
+    } catch (err) {
+      console.error('[admin-schema-test] не удалось записать llm_request_logs:', err);
     }
   }
 
@@ -3115,10 +3192,12 @@ function preferSourceRuntime(): boolean {
 
 function formatSchemaTestLog(llmLog: readonly RuntimeLlmLogEntry[]): SchemaTestLogEntry[] {
   return llmLog.map((entry) => {
-    const nodeId = typeof entry.modelParams?.nodeId === 'string' ? entry.modelParams.nodeId : '';
+    const nodeId =
+      entry.nodeId ??
+      (typeof entry.modelParams?.nodeId === 'string' ? entry.modelParams.nodeId : '');
     return {
       nodeId,
-      kind: entry.kind,
+      schemaSlug: entry.schemaSlug,
       requestText: entry.request,
       responseText: entry.response,
       errorText: entry.error,
@@ -3163,6 +3242,7 @@ function formatSchemaTestNodeTrace(
     durationMs: entry.durationMs,
     outputKeys: entry.outputKeys,
     outputs: truncateTraceValue(entry.outputs) as Record<string, unknown>,
+    inputs: truncateTraceValue(entry.inputs ?? {}) as Record<string, unknown>,
     schemaSlug: entry.schemaSlug,
     depth: entry.depth,
     failed: entry.failed,

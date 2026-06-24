@@ -2,15 +2,13 @@ import {
   BASE_NODE_PALETTE,
   CONSTANT_PORT_TYPES,
   NODE_TYPE_LABELS,
-  ONTOLOGY_QUERY_MODES,
-  DEFAULT_ONTOLOGY_QUERY_MODE,
-  ONTOLOGY_QUERY_MODE_LABELS,
   PORT_TYPES,
   SCHEMA_TABS,
   SUB_SCHEMA_CLASSES,
   SUB_SCHEMA_CLASS_LABELS,
   SchemaContractError,
   arePortTypesCompatible,
+  buildDefaultGraphRagBodyGraph,
   boundaryEndPorts,
   boundaryStartPorts,
   getNodePaletteForSchema,
@@ -36,7 +34,6 @@ import {
   type NodeType,
   type PortDefinition,
   type PortType,
-  type OntologyQueryMode,
   type SchemaBoundaryPort,
   type SchemaGraph,
   type SchemaPaletteKind,
@@ -48,14 +45,12 @@ export {
   BASE_NODE_PALETTE,
   CONSTANT_PORT_TYPES,
   NODE_TYPE_LABELS,
-  ONTOLOGY_QUERY_MODES,
-  DEFAULT_ONTOLOGY_QUERY_MODE,
-  ONTOLOGY_QUERY_MODE_LABELS,
   PORT_TYPES,
   SCHEMA_TABS,
   SUB_SCHEMA_CLASSES,
   SUB_SCHEMA_CLASS_LABELS,
   arePortTypesCompatible,
+  buildDefaultGraphRagBodyGraph,
   boundaryEndPorts,
   boundaryStartPorts,
   getNodePaletteForSchema,
@@ -82,7 +77,6 @@ export type {
   EdgeDefinition,
   NodeDefinition,
   NodeType,
-  OntologyQueryMode,
   PortDefinition,
   PortType,
   SchemaBoundaryPort,
@@ -166,7 +160,7 @@ export type NodeCategory = 'boundary' | 'generation' | 'control' | 'data' | 'uti
 
 export function nodeCategory(type: NodeType): NodeCategory {
   if (type === 'start' || type === 'end') return 'boundary';
-  if (type === 'llm_request' || type === 'knowledge_query' || type === 'media_generate') return 'generation';
+  if (type === 'llm_request' || type === 'knowledge_query' || type === 'graph_rag' || type === 'media_generate') return 'generation';
   if (type === 'condition' || type === 'loop' || type === 'merge') return 'control';
   if (type === 'sub_schema' || type === 'log') return 'utility';
   if (type === 'constant') return 'data';
@@ -332,6 +326,67 @@ export function buildSubSchemaTestInputs(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const port of boundaryStartPorts(graph)) {
+    const raw = values[port.id];
+    if (typeof raw !== 'string' || raw.length === 0) {
+      result[port.id] = defaultBoundaryPortValue(port.type);
+      continue;
+    }
+    result[port.id] = coerceBoundaryPortValue(port.type, raw);
+  }
+  return result;
+}
+
+/**
+ * Входные data-порты узла с телом (loop / graph_rag), по которым строится форма
+ * изолированного теста тела узла (issue #390). Из набора входов узла исключаются
+ * exec-порты — они задают поток управления, а не данные.
+ */
+function nodeBodyDataInputs(node: NodeDefinition, graph?: SchemaGraph): PortDefinition[] {
+  return getNodePorts(node, graph).inputs.filter((port) => port.type !== 'exec');
+}
+
+/**
+ * Типизированные поля ввода для изолированного теста тела узла (issue #390):
+ * строятся по входным data-портам самого тестируемого узла (например, `value`
+ * у loop или `query`/`questions` у graph_rag), а не по граничным портам start-узла
+ * его тела — они могут не совпадать с входами узла.
+ */
+export function nodeBodyTestInputFields(node: NodeDefinition, graph?: SchemaGraph): TestInputField[] {
+  return nodeBodyDataInputs(node, graph).map((port) => ({
+    key: port.id,
+    label: `${port.label} · ${port.type}`,
+    kind: boundaryPortFieldKind(port.type),
+    placeholder: boundaryPortPlaceholder(port.type),
+  }));
+}
+
+/**
+ * Начальные значения inputs изолированного теста тела узла (issue #390): по одному
+ * ключу на каждый входной data-порт тестируемого узла с дефолтом под тип порта.
+ */
+export function defaultNodeBodyTestInputValues(
+  node: NodeDefinition,
+  graph?: SchemaGraph,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const port of nodeBodyDataInputs(node, graph)) {
+    result[port.id] = defaultBoundaryPortValue(port.type);
+  }
+  return result;
+}
+
+/**
+ * Собирает объект inputs изолированного теста тела узла из значений полей формы
+ * (issue #390): ключи — id входных data-портов тестируемого узла, значения
+ * приводятся к типу порта. Пустое поле заменяется дефолтом по типу.
+ */
+export function buildNodeBodyTestInputs(
+  node: NodeDefinition,
+  graph: SchemaGraph | undefined,
+  values: Record<string, string>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const port of nodeBodyDataInputs(node, graph)) {
     const raw = values[port.id];
     if (typeof raw !== 'string' || raw.length === 0) {
       result[port.id] = defaultBoundaryPortValue(port.type);
@@ -667,12 +722,16 @@ export function createGraphNode(
     const kindLabel = paletteKind ? paletteKindLabel(paletteKind) : '—';
     throw new Error(`Узел ${type} недоступен для схемы ${kindLabel}`);
   }
+  const id = nextNodeId(graph, type);
+  const config = type === 'graph_rag'
+    ? { maxIterations: 3, bodyGraph: buildDefaultGraphRagBodyGraph(graph.slug, id) }
+    : defaultConfigFor(type);
   return {
-    id: nextNodeId(graph, type),
+    id,
     type,
     position,
     label: NODE_TYPE_LABELS[type],
-    config: defaultConfigFor(type),
+    config,
   };
 }
 
@@ -798,18 +857,18 @@ export function updateNodeConfig(
   };
 }
 
-// ── Навигация по вложенным bodyGraph (issue #337/#375) ─────────────────────
-// Узлы loop и ontology_query хранят своё тело в config.bodyGraph как полноценный
-// SchemaGraph. Визуальный редактор «спускается» в это тело прямо на том же канвасе
-// и сворачивает стек обратно в корневой граф при сохранении.
+// ── Навигация по вложенным bodyGraph (issue #337) ─────────────────────────
+// Узлы loop хранят своё тело в config.bodyGraph как полноценный SchemaGraph.
+// Визуальный редактор «спускается» в это тело прямо на том же канвасе и
+// сворачивает стек обратно в корневой граф при сохранении.
 
-export type BodyGraphNodeType = 'loop' | 'ontology_query';
+export type BodyGraphNodeType = 'loop' | 'graph_rag';
 
 /** id узла-цикла, в тело которого спустился редактор, и граф-родитель кадра. */
 export interface LoopBodyFrame {
   /** Граф, содержащий узел с bodyGraph: корневой граф или тело внешнего узла. */
   parentGraph: SchemaGraph;
-  /** id узла loop/ontology_query, в чьё тело вошёл редактор. */
+  /** id узла loop, в чьё тело вошёл редактор. */
   loopNodeId: string;
   /** Тип узла с bodyGraph. Для старых кадров loop определяется по умолчанию. */
   nodeType?: BodyGraphNodeType;
@@ -855,7 +914,7 @@ export function makeEmptyBodyGraph(
   nodeId: string,
   nodeType: BodyGraphNodeType,
 ): SchemaGraph {
-  if (nodeType === 'ontology_query') return makeOntologyQueryBodyGraph(parent, nodeId);
+  if (nodeType === 'graph_rag') return buildDefaultGraphRagBodyGraph(parent.slug, nodeId);
   return {
     version: 1,
     slug: bodyGraphSlug(parent.slug, nodeId, nodeType),
@@ -871,77 +930,6 @@ export function makeEmptyBodyGraph(
   };
 }
 
-function makeOntologyQueryBodyGraph(parent: SchemaGraph, nodeId: string): SchemaGraph {
-  return {
-    version: 1,
-    slug: bodyGraphSlug(parent.slug, nodeId, 'ontology_query'),
-    subSchemaClass: 'common',
-    nodes: [
-      {
-        id: 'start',
-        type: 'start',
-        position: { x: 0, y: 0 },
-        config: {
-          outputs: [
-            { id: 'graph', label: 'Graph', type: 'object' },
-            { id: 'query', label: 'Query', type: 'string' },
-            { id: 'anchors', label: 'Anchors', type: 'string_array' },
-            { id: 'traversalContext', label: 'Traversal context', type: 'object' },
-            { id: 'options', label: 'Options', type: 'object' },
-            { id: 'mode', label: 'Mode', type: 'string' },
-            { id: 'communities', label: 'Communities', type: 'object_array' },
-          ],
-        },
-        label: 'Start',
-      },
-      { id: 'anchor_match', type: 'ontology_anchor_match', position: { x: 280, y: -120 }, config: {}, label: 'Match anchors' },
-      { id: 'frontier_expand', type: 'ontology_frontier_expand', position: { x: 560, y: -120 }, config: {}, label: 'Expand frontier' },
-      { id: 'budget_select', type: 'ontology_budget_select', position: { x: 840, y: -120 }, config: {}, label: 'Apply budgets' },
-      { id: 'context_build', type: 'ontology_context_build', position: { x: 1120, y: -120 }, config: {}, label: 'Build context' },
-      {
-        id: 'end',
-        type: 'end',
-        position: { x: 1400, y: 0 },
-        config: {
-          inputs: [
-            { id: 'expertise', label: 'Expertise', type: 'expertise' },
-            { id: 'graph_context', label: 'Graph context', type: 'expertise' },
-            { id: 'subgraph', label: 'Subgraph', type: 'object' },
-            { id: 'trace', label: 'Trace', type: 'object' },
-          ],
-        },
-        label: 'End',
-      },
-    ],
-    edges: [
-      edge('start', 'exec', 'anchor_match', 'exec'),
-      edge('anchor_match', 'exec', 'frontier_expand', 'exec'),
-      edge('frontier_expand', 'exec', 'budget_select', 'exec'),
-      edge('budget_select', 'exec', 'context_build', 'exec'),
-      edge('context_build', 'exec', 'end', 'exec'),
-      edge('start', 'graph', 'anchor_match', 'graph'),
-      edge('start', 'query', 'anchor_match', 'query'),
-      edge('start', 'anchors', 'anchor_match', 'anchors'),
-      edge('start', 'graph', 'frontier_expand', 'graph'),
-      edge('anchor_match', 'anchorSlugs', 'frontier_expand', 'anchorSlugs'),
-      edge('start', 'traversalContext', 'frontier_expand', 'traversalContext'),
-      edge('start', 'options', 'frontier_expand', 'options'),
-      edge('frontier_expand', 'subgraph', 'budget_select', 'subgraph'),
-      edge('start', 'options', 'budget_select', 'options'),
-      edge('frontier_expand', 'trace', 'budget_select', 'trace'),
-      edge('budget_select', 'subgraph', 'context_build', 'subgraph'),
-      edge('start', 'communities', 'context_build', 'communities'),
-      edge('start', 'mode', 'context_build', 'mode'),
-      edge('budget_select', 'trace', 'context_build', 'trace'),
-      edge('context_build', 'expertise', 'end', 'expertise'),
-      edge('context_build', 'graph_context', 'end', 'graph_context'),
-      edge('budget_select', 'subgraph', 'end', 'subgraph'),
-      edge('context_build', 'trace', 'end', 'trace'),
-    ],
-    variables: {},
-  };
-}
-
 /** Тело выбранного цикла: сохранённое (клон) либо свежесозданное пустое (issue #337). */
 export function getLoopBodyGraph(parent: SchemaGraph, loopNodeId: string): SchemaGraph {
   return getBodyGraph(parent, loopNodeId);
@@ -949,13 +937,12 @@ export function getLoopBodyGraph(parent: SchemaGraph, loopNodeId: string): Schem
 
 export function getBodyGraph(parent: SchemaGraph, nodeId: string): SchemaGraph {
   const node = parent.nodes.find((candidate) => candidate.id === nodeId);
-  const nodeType = node?.type === 'ontology_query' ? 'ontology_query' : 'loop';
   const body = node ? node.config.bodyGraph : undefined;
   if (isBodyGraph(body)) return cloneValue(body);
-  return makeEmptyBodyGraph(parent, nodeId, nodeType);
+  return makeEmptyBodyGraph(parent, nodeId, node?.type === 'graph_rag' ? 'graph_rag' : 'loop');
 }
 
-/** Копия parent с обновлённым config.bodyGraph узла loop/ontology_query. */
+/** Копия parent с обновлённым config.bodyGraph узла loop. */
 export function writeBodyGraph(
   parent: SchemaGraph,
   nodeId: string,
@@ -999,6 +986,31 @@ export function collapseBodyGraphFrames(
     result = writeBodyGraph(frames[i].parentGraph, frames[i].loopNodeId, result);
   }
   return result;
+}
+
+/**
+ * Восстанавливает стек открытых тел узлов на свежем корневом графе (issue #393).
+ * После сохранения схемы сервер возвращает весь граф заново, и редактор должен
+ * остаться в той же открытой схеме узла, что и до сохранения. Проходим по тому же
+ * пути идентификаторов `loopNodeId` сверху вниз, собирая новые кадры со снимками
+ * актуальных родителей; листом становится тело самого вложенного узла. Если путь
+ * оборвался (узел исчез или перестал быть контейнером тела), останавливаемся на
+ * достигнутом уровне.
+ */
+export function reopenBodyGraphFrames(
+  root: SchemaGraph,
+  frames: readonly LoopBodyFrame[],
+): { frames: LoopBodyFrame[]; leaf: SchemaGraph } {
+  const rebuilt: LoopBodyFrame[] = [];
+  let current = root;
+  for (const frame of frames) {
+    const node = current.nodes.find((candidate) => candidate.id === frame.loopNodeId);
+    if (!node || (node.type !== 'loop' && node.type !== 'graph_rag')) break;
+    const nodeType: BodyGraphNodeType = node.type === 'graph_rag' ? 'graph_rag' : 'loop';
+    rebuilt.push({ parentGraph: current, loopNodeId: frame.loopNodeId, nodeType });
+    current = getBodyGraph(current, frame.loopNodeId);
+  }
+  return { frames: rebuilt, leaf: current };
 }
 
 export function makeEmptyGraph(slug: string, schemaType: SchemaType): SchemaGraph {
@@ -1130,6 +1142,7 @@ export function formatConfigSummary(node: NodeDefinition): string {
     return `${asString(node.config.input) ?? 'value'} ${asString(node.config.operator) ?? 'truthy'}`;
   }
   if (node.type === 'loop') return `max ${String(node.config.maxIterations ?? 1)}`;
+  if (node.type === 'graph_rag') return `max ${String(node.config.maxIterations ?? 3)}`;
   if (node.type === 'transform') {
     const inputs = Array.isArray(node.config.inputs) ? node.config.inputs.length : 0;
     const outputs = Array.isArray(node.config.outputs) ? node.config.outputs.length : 0;
@@ -1182,6 +1195,7 @@ function defaultConfigFor(type: NodeType): Record<string, unknown> {
   }
   if (type === 'condition') return { input: 'value', operator: 'truthy', right: '' };
   if (type === 'loop') return { maxIterations: 3, exitExpression: '' };
+  if (type === 'graph_rag') return { maxIterations: 3 };
   if (type === 'transform') {
     return { code: 'return input;', inputs: [], outputs: [{ name: 'result', type: 'any', path: 'result' }] };
   }

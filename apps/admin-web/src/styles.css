@@ -578,6 +578,48 @@ tbody tr:hover {
   color: var(--danger);
 }
 
+/* Сворачиваемые записи LLM-лога (issue #403). */
+.llm-log-records {
+  display: grid;
+  gap: 8px;
+}
+
+.llm-log-record {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafbf8;
+}
+
+.llm-log-record > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+}
+
+.llm-log-record[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.llm-log-record > .subhead,
+.llm-log-record > .json-box {
+  margin-left: 12px;
+  margin-right: 12px;
+}
+
+.llm-log-record > .json-box:last-child {
+  margin-bottom: 12px;
+}
+
+.llm-log-source {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
 .timeline {
   display: grid;
   gap: 10px;
@@ -1529,6 +1571,15 @@ tbody tr:hover {
 
 .schema-test-node-trace-row--failed td {
   background: #fbe9e7;
+}
+
+/* Подпись блока входов/выходов узла в детализации лога (issue #406): для упавшего
+   узла рядом с выходами показываем входы, чтобы было видно, с чем он исполнялся. */
+.schema-test-node-trace-label {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
 }
 
 /* Бейдж способа исполнения узла: «данные» (pure-зависимость) отличаем от «поток». */

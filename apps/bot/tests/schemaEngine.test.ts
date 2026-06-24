@@ -134,6 +134,8 @@ describe('schemaEngine', () => {
       schemaSlug: 'transform_test',
     });
     expect(byNode.get('transform')?.outputKeys).toContain('result');
+    // Входы узла тоже фиксируются (issue #406): transform получил value со start.
+    expect(byNode.get('transform')?.inputs).toEqual({ value: 2 });
   });
 
   it('помечает упавший узел в nodeTrace как failed (issue #347)', async () => {
@@ -146,6 +148,22 @@ describe('schemaEngine', () => {
     const failed = nodeTrace.find((entry) => entry.failed);
     expect(failed?.nodeId).toBe('transform');
     expect(failed?.outputs).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('пишет входы упавшего узла в nodeTrace (issue #406)', async () => {
+    // Узел transform падает на доступе к окружению. В лог теста должна попасть
+    // информация о его входах — оператор видит, с какими данными узел исполнялся,
+    // и может воспроизвести сбой. Вход value приходит со start (ctx.inputs.value).
+    const graph = transformGraph('return process.env.SECRET;');
+    const context = ctx(graph, mockProvider([]), { value: 42 });
+    const nodeTrace: SchemaNodeTraceEntry[] = [];
+    context.nodeTrace = nodeTrace;
+
+    await expect(executeSchema(graph, context)).rejects.toThrow('запрещённый доступ');
+
+    const failed = nodeTrace.find((entry) => entry.failed);
+    expect(failed?.nodeId).toBe('transform');
+    expect(failed?.inputs).toEqual({ value: 42 });
   });
 
   it('nodeTrace вложенной sub_schema получает глубину depth=1 (issue #347)', async () => {
@@ -1266,5 +1284,148 @@ describe('schemaEngine', () => {
     expect(outputs.items).toEqual([{ id: 1 }]);
     // Невалидный JSON для object → пустой объект (а не падение).
     expect(outputs.broken).toEqual({});
+  });
+
+  function graphRagGraph(maxIterations = 3): SchemaGraph {
+    return {
+      version: 1,
+      schemaType: 'action',
+      slug: 'graph_rag_runtime',
+      variables: {},
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+        { id: 'rag', type: 'graph_rag', position: { x: 240, y: 0 }, config: { maxIterations } },
+        { id: 'end', type: 'end', position: { x: 480, y: 0 }, config: {} },
+      ],
+      edges: [
+        { id: 'start-rag', from: 'start', fromPort: 'exec', to: 'rag', toPort: 'exec' },
+        { id: 'rag-end', from: 'rag', fromPort: 'exec', to: 'end', toPort: 'exec' },
+        { id: 'query', from: 'start', fromPort: 'action', to: 'rag', toPort: 'query' },
+        { id: 'result', from: 'rag', fromPort: 'result', to: 'end', toPort: 'result' },
+      ],
+    };
+  }
+
+  function concept(id: string, conceptText = id) {
+    return {
+      id,
+      concept: conceptText,
+      description: `Описание ${conceptText}`,
+      edges: [{ relationType: 'связан', neighborId: 'c2', neighbor: 'Укрытие', neighborDescription: 'Тёплое место' }],
+    };
+  }
+
+  it('graph_rag выполняет первый проход: ключи через LLM, graph_query и финальный ответ', async () => {
+    const graph = graphRagGraph();
+    const provider = mockProvider([
+      JSON.stringify({ keys: ['мороз'] }),
+      JSON.stringify({ keep: ['c1'], load: ['c2'] }),
+      JSON.stringify({ keep: ['c1', 'c2'], load: [] }),
+      JSON.stringify({ questions: [] }),
+      JSON.stringify({ result: 'Ответ по графу' }),
+    ]);
+    const graphQuery = vi.fn(async (keys: string[]) => (keys.includes('c2') ? [concept('c2', 'Укрытие')] : [concept('c1', 'Мороз')]));
+    const context = ctx(graph, provider, { action: 'Как выжить в мороз?' }) as SchemaExecutionContext & {
+      graphQuery: typeof graphQuery;
+    };
+    context.graphQuery = graphQuery;
+
+    const outputs = await executeSchema(graph, context);
+
+    expect(outputs.result).toBe('Ответ по графу');
+    expect(provider.generateText).toHaveBeenCalledTimes(5);
+    expect(graphQuery).toHaveBeenNthCalledWith(1, ['мороз'], expect.objectContaining({ gameId: manifest.id }));
+    expect(graphQuery).toHaveBeenNthCalledWith(2, ['c2'], expect.objectContaining({ gameId: manifest.id }));
+  });
+
+  it('graph_rag игнорирует внешний вход questions — поиск всегда стартует с extract_keys (issue #392)', async () => {
+    // У публичного узла нет входа questions: повторные итерации управляются внутри
+    // тела. Даже если questions переданы во входной контекст, первый проход всё равно
+    // выделяет ключи из запроса (extract_keys), а не использует внешние вопросы.
+    const graph = graphRagGraph();
+    const provider = mockProvider([
+      JSON.stringify({ keys: ['мороз'] }),
+      JSON.stringify({ keep: ['c1'], load: ['c2'] }),
+      JSON.stringify({ keep: ['c1', 'c2'], load: [] }),
+      JSON.stringify({ questions: [] }),
+      JSON.stringify({ result: 'Ответ по графу' }),
+    ]);
+    const graphQuery = vi.fn(async (keys: string[]) => (keys.includes('c2') ? [concept('c2', 'Укрытие')] : [concept('c1', 'Мороз')]));
+    const context = ctx(graph, provider, {
+      action: 'Как выжить?',
+      questions: ['где найти тёплое укрытие'],
+    }) as SchemaExecutionContext & { graphQuery: typeof graphQuery };
+    context.graphQuery = graphQuery;
+
+    const outputs = await executeSchema(graph, context);
+
+    expect(outputs.result).toBe('Ответ по графу');
+    expect(provider.generateText).toHaveBeenCalledTimes(5);
+    // Первый graph_query идёт по ключам из extract_keys, а не по внешним questions.
+    expect(graphQuery).toHaveBeenNthCalledWith(1, ['мороз'], expect.objectContaining({ gameId: manifest.id }));
+  });
+
+  it('graph_rag на последней итерации принудительно отдаёт финальный ответ (issue #392)', async () => {
+    // maxIterations=1: даже если критик всё ещё формулирует уточняющие вопросы,
+    // вход lastIteration узла has_missing_questions прерывает поиск и тело уходит на
+    // финальный ответ — узел возвращает result, а не падает ошибкой maxIterations.
+    const graph = graphRagGraph(1);
+    const provider = mockProvider([
+      JSON.stringify({ keys: ['мороз'] }),
+      JSON.stringify({ keep: ['c1'], load: [] }),
+      JSON.stringify({ keep: ['c1'], load: [] }),
+      JSON.stringify({ questions: ['какая температура опасна?'] }),
+      JSON.stringify({ result: 'Ответ несмотря на вопросы критика' }),
+    ]);
+    const graphQuery = vi.fn(async () => [concept('c1', 'Мороз')]);
+    const context = ctx(graph, provider, { action: 'Как выжить в мороз?' }) as SchemaExecutionContext & {
+      graphQuery: typeof graphQuery;
+    };
+    context.graphQuery = graphQuery;
+
+    const outputs = await executeSchema(graph, context);
+
+    expect(outputs.result).toBe('Ответ несмотря на вопросы критика');
+    expect(provider.generateText).toHaveBeenCalledTimes(5);
+  });
+
+  it('graph_rag проходит несколько итераций: критик просит факты, затем отдаёт ответ (issue #388)', async () => {
+    // Регрессионный тест на дефолтное тело graph_rag: критик первой итерации возвращает
+    // уточняющие вопросы, и движок запускает вторую итерацию, где ключи берутся из этих
+    // вопросов (без extract_keys), а критик уже считает фактов достаточно. Тест доказывает,
+    // что переход между итерациями работает и в теле нет data-цикла critic↔summarize_iteration
+    // (иначе resolveNodeInputs упал бы с «содержат цикл»).
+    const graph = graphRagGraph();
+    const provider = mockProvider([
+      // Итерация 1: вопросов нет → extract_keys, далее критик просит ещё факты.
+      JSON.stringify({ keys: ['мороз'] }),
+      JSON.stringify({ keep: ['c1'], load: ['c2'] }),
+      JSON.stringify({ keep: ['c1', 'c2'], load: [] }),
+      JSON.stringify({ questions: ['какая температура опасна?'] }),
+      // Итерация 2: ключи берутся из вопросов прошлой итерации, фактов хватает.
+      JSON.stringify({ keep: ['c1'], load: ['c2'] }),
+      JSON.stringify({ keep: ['c1', 'c2'], load: [] }),
+      JSON.stringify({ questions: [] }),
+      JSON.stringify({ result: 'Итоговый ответ по графу' }),
+    ]);
+    const graphQuery = vi.fn(async (keys: string[]) =>
+      keys.includes('c2') ? [concept('c2', 'Укрытие')] : [concept('c1', 'Мороз')],
+    );
+    const context = ctx(graph, provider, { action: 'Как выжить в мороз?' }) as SchemaExecutionContext & {
+      graphQuery: typeof graphQuery;
+    };
+    context.graphQuery = graphQuery;
+
+    const outputs = await executeSchema(graph, context);
+
+    expect(outputs.result).toBe('Итоговый ответ по графу');
+    expect(provider.generateText).toHaveBeenCalledTimes(8);
+    // Итерация 1 извлекает ключи из запроса, итерация 2 — из вопросов критика.
+    expect(graphQuery).toHaveBeenNthCalledWith(1, ['мороз'], expect.objectContaining({ gameId: manifest.id }));
+    expect(graphQuery).toHaveBeenNthCalledWith(
+      3,
+      ['какая температура опасна?'],
+      expect.objectContaining({ gameId: manifest.id }),
+    );
   });
 });

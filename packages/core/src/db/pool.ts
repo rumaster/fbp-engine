@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { loadConfig } from '../config.js';
+import { loadDbConfig } from '../config.js';
 
 const { Pool } = pg;
 
@@ -10,7 +10,9 @@ let pool: pg.Pool | null = null;
  */
 export function getPool(): pg.Pool {
   if (!pool) {
-    const { db } = loadConfig();
+    // Миграциям нужен только конфиг БД, поэтому грузим его отдельно от полного
+    // конфига приложения, который требует TELEGRAM_BOT_TOKEN (issue #408).
+    const db = loadDbConfig();
     pool = new Pool({
       host: db.host,
       port: db.port,

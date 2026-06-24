@@ -1,5 +1,5 @@
 import { calcCostMillicents, type ModelPricing, type TokenUsage, usageToTokenUsage } from '../../llm/pricing.js';
-import type { LLMCallKind, LLMCallLogEntry } from '../../llm/trace.js';
+import type { LLMCallLogEntry } from '../../llm/trace.js';
 import { getPool } from '../pool.js';
 
 export interface LlmRequestLogInput {
@@ -7,7 +7,10 @@ export interface LlmRequestLogInput {
   sessionId?: string | null;
   stepId?: string | null;
   supportTicketId?: string | null;
-  requestKind: LLMCallKind;
+  /** Slug схемы-источника запроса (issue #403); NULL у медиа-запросов. */
+  schemaSlug?: string | null;
+  /** Идентификатор узла-источника запроса (issue #403); NULL у медиа-запросов. */
+  nodeId?: string | null;
   provider: string;
   model: string;
   modelParams?: Record<string, unknown>;
@@ -41,7 +44,9 @@ export interface LlmRequestLogContext {
   sessionId?: string | null;
   stepId?: string | null;
   supportTicketId?: string | null;
-  requestKind?: LLMCallKind;
+  /** Источник запроса по умолчанию, если запись runtime-лога его не несёт. */
+  schemaSlug?: string | null;
+  nodeId?: string | null;
   provider: string;
   model: string;
   modelParams?: Record<string, unknown>;
@@ -54,7 +59,8 @@ export interface LlmRequestLogRow {
   session_id: string | null;
   step_id: string | null;
   support_ticket_id: string | null;
-  request_kind: LLMCallKind;
+  schema_slug: string | null;
+  node_id: string | null;
   provider: string;
   model: string;
   model_params: Record<string, unknown>;
@@ -77,10 +83,6 @@ export function buildLlmRequestLogInputs(
   context: LlmRequestLogContext,
 ): LlmRequestLogInput[] {
   return entries.map((entry) => {
-    const requestKind = entry.kind ?? context.requestKind;
-    if (!requestKind) {
-      throw new Error('Не задан requestKind для строки аудита LLM');
-    }
     const tokenUsage = usageToTokenUsage(entry.usage);
     const costMillicents = context.pricing
       ? calcCostMillicents(tokenUsage, context.pricing)
@@ -90,7 +92,8 @@ export function buildLlmRequestLogInputs(
       sessionId: context.sessionId,
       stepId: context.stepId,
       supportTicketId: context.supportTicketId,
-      requestKind,
+      schemaSlug: entry.schemaSlug ?? context.schemaSlug ?? null,
+      nodeId: entry.nodeId ?? context.nodeId ?? null,
       provider: context.provider,
       model: context.model,
       modelParams: {
@@ -127,18 +130,19 @@ export async function insertLlmRequestLogs(
       };
       const inserted = await client.query<LlmRequestLogRow>(
         `INSERT INTO llm_request_logs (
-           user_id, session_id, step_id, support_ticket_id, request_kind,
+           user_id, session_id, step_id, support_ticket_id, schema_slug, node_id,
            provider, model, model_params, request_text, response_text, error_text,
            token_usage, cost_millicents, retrieved_documents
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          RETURNING *`,
         [
           input.userId ?? null,
           input.sessionId ?? null,
           input.stepId ?? null,
           input.supportTicketId ?? null,
-          input.requestKind,
+          input.schemaSlug ?? null,
+          input.nodeId ?? null,
           input.provider,
           input.model,
           JSON.stringify(input.modelParams ?? {}),

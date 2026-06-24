@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BASE_NODE_PALETTE,
   GAME_STATE_READ_OUTPUTS,
+  NODE_TYPES,
   SchemaContractError,
+  buildDefaultGraphRagBodyGraph,
   execInputPortIds,
   execOutputPortIds,
   getNodePaletteForSchema,
@@ -71,6 +74,107 @@ describe('shared schema contract', () => {
   it('задаёт schema-specific palette policy', () => {
     expect(getNodePaletteForSchema('action')).toContain('game_state_write');
     expect(getNodePaletteForSchema('support')).not.toContain('game_state_write');
+  });
+
+  it('регистрирует graph_rag как публичный узел и оставляет graph_query внутренним', () => {
+    expect(NODE_TYPES).toContain('graph_rag');
+    expect(NODE_TYPES).toContain('graph_query');
+    expect(BASE_NODE_PALETTE).toContain('graph_rag');
+    expect(BASE_NODE_PALETTE).not.toContain('graph_query');
+    expect(getNodePaletteForSchema('action')).toContain('graph_rag');
+    expect(getNodePaletteForSchema('action')).not.toContain('graph_query');
+
+    const graphRagPorts = getNodePortDefinitions({
+      id: 'rag',
+      type: 'graph_rag',
+      position: { x: 0, y: 0 },
+      config: { maxIterations: 3 },
+    });
+    // issue #392: у публичного узла нет входа questions (внутренний механизм
+    // повторных итераций), зато есть вход options типа object.
+    expect(graphRagPorts.inputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'exec', type: 'exec' }),
+        expect.objectContaining({ id: 'query', type: 'string' }),
+        expect.objectContaining({ id: 'options', type: 'object' }),
+      ]),
+    );
+    expect(graphRagPorts.inputs.some((port) => port.id === 'questions')).toBe(false);
+    expect(graphRagPorts.outputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'exec', type: 'exec' }),
+        expect.objectContaining({ id: 'result', type: 'string' }),
+      ]),
+    );
+  });
+
+  it('валидирует дефолтный bodyGraph только внутри graph_rag', () => {
+    const bodyGraph = buildDefaultGraphRagBodyGraph('action', 'rag');
+    expect(() => validateSchemaGraphContract(bodyGraph)).toThrow('Узел graph_query недоступен');
+
+    const graph: SchemaGraph = {
+      version: 1,
+      schemaType: 'action',
+      slug: 'action',
+      variables: {},
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, config: {} },
+        {
+          id: 'rag',
+          type: 'graph_rag',
+          position: { x: 200, y: 0 },
+          config: { maxIterations: 3, bodyGraph },
+        },
+        { id: 'end', type: 'end', position: { x: 400, y: 0 }, config: {} },
+      ],
+      edges: [
+        { id: 'start-rag', from: 'start', fromPort: 'exec', to: 'rag', toPort: 'exec' },
+        { id: 'rag-end', from: 'rag', fromPort: 'exec', to: 'end', toPort: 'exec' },
+        { id: 'query', from: 'start', fromPort: 'action', to: 'rag', toPort: 'query' },
+        { id: 'result', from: 'rag', fromPort: 'result', to: 'end', toPort: 'result' },
+      ],
+    };
+    expect(() => validateSchemaGraphContract(graph)).not.toThrow();
+  });
+
+  it('дефолтное тело даёт start-выходы options/lastIteration и прерывает поиск (issue #392)', () => {
+    const bodyGraph = buildDefaultGraphRagBodyGraph('action', 'rag');
+    const startNode = bodyGraph.nodes.find((node) => node.id === 'start');
+    const startOutputs = (startNode?.config?.outputs ?? []).map((port: { id: string }) => port.id);
+    expect(startOutputs).toContain('options');
+    expect(startOutputs).toContain('lastIteration');
+
+    // has_missing_questions получает lastIteration и принудительно прерывает поиск.
+    const missing = bodyGraph.nodes.find((node) => node.id === 'has_missing_questions');
+    const missingInputs = (missing?.config?.inputs ?? []).map((port: { name: string }) => port.name);
+    expect(missingInputs).toContain('lastIteration');
+    expect(
+      bodyGraph.edges.some(
+        (edge) =>
+          edge.from === 'start' &&
+          edge.fromPort === 'lastIteration' &&
+          edge.to === 'has_missing_questions' &&
+          edge.toPort === 'lastIteration',
+      ),
+    ).toBe(true);
+
+    // Тело по-прежнему валидно внутри graph_rag.
+    expect(() =>
+      validateSchemaGraphContract(bodyGraph, { allowInternalGraphQuery: true }),
+    ).not.toThrow();
+  });
+
+  it('стандартизирует graph_rag limits', () => {
+    const graph = baseGraph();
+    graph.nodes[1] = {
+      id: 'rag',
+      type: 'graph_rag',
+      position: { x: 200, y: 0 },
+      config: { maxIterations: 0 },
+    };
+
+    const err = expectContractError(() => validateSchemaGraphContract(graph), 'invalid_graph_rag_limits');
+    expect(err.message).toBe('graph_rag-узлу rag нужен maxIterations от 1 до 5');
   });
 
   it('не добавляет exec-порты блокам чтения и записи памяти', () => {

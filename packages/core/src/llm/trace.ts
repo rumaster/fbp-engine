@@ -5,26 +5,15 @@ import type {
   LLMUsage,
 } from './ILLMProvider.js';
 
-export type LLMCallKind =
-  | 'support_consultation'
-  | 'support_expertise_detection'
-  | 'support_document_filter'
-  | 'support_compilation'
-  | 'hint_generation'
-  | 'game_expertise_detection'
-  | 'game_memory_extraction'
-  | 'graph_extraction'
-  | 'graph_community_summary'
-  | 'narrative_generation'
-  | 'world_state_evaluation'
-  | 'media_speech'
-  | 'media_image'
-  | 'media_transcription';
-
 /** Один фактический обмен с LLM: запрос, ответ/ошибка и usage. */
 export interface LLMCallLogEntry {
-  /** Функциональный тип запроса: подсказка, нарратив, учёт состояния и т. п. */
-  kind?: LLMCallKind;
+  /**
+   * Slug схемы, из которой сделан запрос (issue #403). У не-схемных запросов
+   * (озвучка/иллюстрация/распознавание речи) схемы нет — поле не задаётся.
+   */
+  schemaSlug?: string;
+  /** Идентификатор узла схемы, сделавшего запрос (issue #403). */
+  nodeId?: string;
   request: string;
   response: string;
   /** Текст ошибки, если вызов провайдера завершился исключением. */
@@ -54,7 +43,10 @@ export interface RetrievedExpertiseDocumentTrace {
 }
 
 export interface LLMCallLogMeta {
-  kind?: LLMCallKind;
+  /** Slug схемы, из которой сделан запрос (issue #403). */
+  schemaSlug?: string;
+  /** Идентификатор узла схемы, сделавшего запрос (issue #403). */
+  nodeId?: string;
   modelParams?: Record<string, unknown>;
 }
 
@@ -79,12 +71,20 @@ export async function generateTextWithLog(
   const modelParams = { ...requestModelParams(options), ...meta.modelParams };
   try {
     const result = await generateTextResult(provider, options);
-    log.push({ kind: meta.kind, request, response: result.text, usage: result.usage, modelParams });
+    log.push({
+      schemaSlug: meta.schemaSlug,
+      nodeId: meta.nodeId,
+      request,
+      response: result.text,
+      usage: result.usage,
+      modelParams,
+    });
     return result.text;
   } catch (err) {
     const message = errorMessage(err);
     log.push({
-      kind: meta.kind,
+      schemaSlug: meta.schemaSlug,
+      nodeId: meta.nodeId,
       request,
       response: `Ошибка: ${message}`,
       error: message,

@@ -5,7 +5,7 @@
  * концептов (минимум — связные компоненты по сильным рёбрам, как и указано в
  * плане; цель — Leiden с весами) и просим LLM написать короткую сводку — «дух»
  * каждого кластера (законы, тон, опасности). Сводки кешируются в Neo4j как
- * узлы GraphCommunity и питают ГЛОБАЛЬНЫЙ (обзорный) запрос узла ontology_query
+ * узлы GraphCommunity и питают глобальный обзорный Graph RAG-запрос
  * через map-reduce — то, чего не даёт ни Vector RAG, ни локальный обход подграфа.
  *
  * detectCommunities — чистая детерминированная функция (тестируется без LLM/БД).
@@ -222,7 +222,6 @@ export async function summarizeCommunities(
           provider,
           { prompt, systemInstruction, jsonMode: true },
           llmLog,
-          { kind: 'graph_community_summary' },
         );
       } catch (err) {
         console.warn(

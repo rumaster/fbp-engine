@@ -143,19 +143,19 @@ describe('resolveModelDefaults (issue #345)', () => {
 });
 
 describe('createModelRouter (issue #345)', () => {
-  it('для всех типов LLM-запросов использует один глобальный default model', async () => {
+  it('для всех LLM-запросов использует один глобальный default model', async () => {
     queryMock.mockResolvedValue({
       rows: [defaultRow('llm_model_name', 'gemini-2.5-flash')],
     });
 
     const router = createModelRouter(makeConfig(), baseProvider);
-    const narrative = await router.resolve('narrative_generation');
-    const support = await router.resolve('support_consultation');
+    const first = await router.resolve();
+    const second = await router.resolve();
 
-    expect(narrative.providerName).toBe('GOOGLE');
-    expect(narrative.model).toBe('gemini-2.5-flash');
-    expect(narrative.provider).toBeInstanceOf(GoogleProvider);
-    expect(support.model).toBe('gemini-2.5-flash');
+    expect(first.providerName).toBe('GOOGLE');
+    expect(first.model).toBe('gemini-2.5-flash');
+    expect(first.provider).toBeInstanceOf(GoogleProvider);
+    expect(second.model).toBe('gemini-2.5-flash');
     expect(queryMock).toHaveBeenCalledTimes(1);
     expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('model_rules'))).toBe(false);
   });
@@ -164,7 +164,7 @@ describe('createModelRouter (issue #345)', () => {
     queryMock.mockResolvedValue({ rows: [] });
 
     const router = createModelRouter(makeConfig(), baseProvider);
-    const routed = await router.resolve('narrative_generation');
+    const routed = await router.resolve();
 
     expect(routed.provider).toBe(baseProvider);
     expect(routed.providerName).toBe('GOOGLE');
@@ -175,7 +175,7 @@ describe('createModelRouter (issue #345)', () => {
     queryMock.mockRejectedValue(new Error('db down'));
 
     const router = createModelRouter(makeConfig(), baseProvider);
-    const routed = await router.resolve('narrative_generation');
+    const routed = await router.resolve();
 
     expect(routed.provider).toBe(baseProvider);
     expect(routed.model).toBe('gemini-env');
